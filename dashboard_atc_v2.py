@@ -1,21 +1,10 @@
 """
-╔══════════════════════════════════════════════════════════════════╗
-║  DASHBOARD GERENCIAL ATC · OPCIÓN YO  ·  v2                        ║
-║  Fuente principal : treble.csv  (chats atendidos)                 ║
-║  Exports opcionales (Treble): Outbound · Fallas · Inversión ·     ║
-║                               HSM · Horarios/Conexión             ║
-║  Stack  : Streamlit · Pandas 2.x/3.x · Plotly                     ║
-║  Ejecutar: python -m streamlit run dashboard_atc_v2.py            ║
-╚══════════════════════════════════════════════════════════════════╝
-Mejoras v2 (respecto a v1):
-  • Identidad visual Opción Yo (teal/blue, tarjetas KPI, logo, pills).
-  • TPR por agente con MEDIANA (antes promedio → outlier de días).
-  • Churn de plan separado de Reprogramación de sesión.
-  • Rating con cobertura honesta de encuesta (response rate).
-  • Loader robusto + uploader + validación de esquema.
-  • Guardas en .mode()[0] (no rompe con filtros vacíos).
-  • Estructura completa del PDF de Atención al Cliente como pestañas.
-  • NUEVO: Comparativo de agente por Semana y por Día.
+╔══════════════════════════════════════════════════════════════╗
+║  DASHBOARD GERENCIAL ATC · OPCIÓN YO  ·  v3                 ║
+║  8 pestañas · 6 KPIs invisibles · Marca Opción Yo           ║
+║  Stack: Streamlit ≥1.40 · Pandas ≥2.1 · Plotly ≥5.20       ║
+║  Ejecutar: python -m streamlit run dashboard_atc_v3.py       ║
+╚══════════════════════════════════════════════════════════════╝
 """
 
 import streamlit as st
@@ -25,338 +14,349 @@ import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
-# ════════════════════════════════════════════════════════════════════
-#  CONFIGURACIÓN DE PÁGINA
-# ════════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════
+#  CONFIGURACIÓN
+# ══════════════════════════════════════════════════════════════
 st.set_page_config(
-    page_title="ATC · Opción Yo – Gerencia",
+    page_title="ATC · Opción Yo",
     page_icon="🟢",
     layout="wide",
     initial_sidebar_state="expanded",
 )
 
-# ── Paleta corporativa Opción Yo (tomada del tablero oficial) ────────
-OY_TEAL      = "#16B6C2"   # primario de marca
-OY_TEAL_DARK = "#0E8E99"   # títulos / bordes
-OY_BLUE      = "#2F80ED"   # secundario (outbound)
+# ── Paleta corporativa ────────────────────────────────────────
+OY_TEAL      = "#16B6C2"
+OY_TEAL_DARK = "#0E8E99"
+OY_BLUE      = "#2F80ED"
 OY_OK        = "#27AE60"
 OY_WARN      = "#E5484D"
 OY_AMBER     = "#F2A33C"
-OY_INK       = "#16323A"   # texto
+OY_INK       = "#16323A"
 COLOR_SEQ    = [OY_TEAL, OY_BLUE, OY_AMBER, "#7E57C2", "#EC4899",
                 "#26A69A", "#FF7043", "#42A5F5", "#9CCC65", "#5C6BC0"]
-TEAL_SCALE   = [[0, "#E3F6F8"], [0.5, OY_TEAL], [1, OY_TEAL_DARK]]
 
-# ── CSS de marca ─────────────────────────────────────────────────────
+# ── CSS ───────────────────────────────────────────────────────
 st.markdown("""
 <style>
-:root{
-  --oy-teal:#16B6C2; --oy-teal-d:#0E8E99; --oy-blue:#2F80ED;
-  --oy-ok:#27AE60; --oy-warn:#E5484D; --oy-amber:#F2A33C; --oy-ink:#16323A;
-}
-.stApp { background:#FFFFFF; }
-.block-container { padding-top:1.0rem; }
-h1,h2,h3 { color:var(--oy-teal-d); }
-[data-testid="stMetricValue"]{ font-size:1.75rem!important; font-weight:800; color:var(--oy-ink);}
-[data-testid="stMetricLabel"]{ font-size:0.80rem!important; color:#5a6b72; font-weight:600;}
-[data-testid="stMetricDelta"]{ font-size:0.80rem!important; }
+:root{--oy-teal:#16B6C2;--oy-td:#0E8E99;--oy-blue:#2F80ED;
+      --oy-ok:#27AE60;--oy-warn:#E5484D;--oy-amb:#F2A33C;--oy-ink:#16323A;}
+.stApp{background:#fff;}
+.block-container{padding-top:.8rem;}
+h1,h2,h3{color:var(--oy-td);}
+[data-testid="stMetricValue"]{font-size:1.7rem!important;font-weight:800;color:var(--oy-ink);}
+[data-testid="stMetricLabel"]{font-size:.78rem!important;color:#5a6b72;font-weight:600;}
 
-/* Header de marca */
-.oy-header{
-  display:flex; align-items:center; gap:14px;
-  background:linear-gradient(90deg,var(--oy-teal) 0%, #1AC3CF 100%);
-  padding:14px 20px; border-radius:14px; margin-bottom:6px;
-  box-shadow:0 6px 18px rgba(22,182,194,.25);
-}
-.oy-logo{ font-weight:800; font-size:1.55rem; letter-spacing:.3px;
-  color:#fff; line-height:1; }
-.oy-logo .yo{ color:#0A4750; }
-.oy-htitle{ color:#fff; font-weight:800; font-size:1.15rem; margin:0;}
-.oy-hsub{ color:#E8FBFD; font-size:.82rem; margin:0;}
+.oy-header{display:flex;align-items:center;gap:14px;
+  background:linear-gradient(90deg,var(--oy-teal) 0%,#1AC3CF 100%);
+  padding:14px 20px;border-radius:14px;margin-bottom:6px;
+  box-shadow:0 6px 18px rgba(22,182,194,.25);}
+.oy-logo{font-weight:800;font-size:1.5rem;color:#fff;line-height:1;}
+.oy-logo span{color:#0A4750;}
+.oy-htitle{color:#fff;font-weight:800;font-size:1.1rem;margin:0;}
+.oy-hsub{color:#E8FBFD;font-size:.8rem;margin:0;}
 
-/* Section pill */
-.sec-title{
-  background:var(--oy-teal); color:#fff;
-  padding:.45rem 1rem; border-radius:8px;
-  font-weight:700; margin:.2rem 0 .8rem 0; font-size:1rem;
-  display:inline-block;
-}
-/* Tarjetas KPI estilo Opción Yo */
-.kpi-grid{ display:flex; gap:12px; flex-wrap:wrap; margin-bottom:6px;}
-.kpi{
-  flex:1; min-width:135px;
-  background:var(--oy-teal); border-radius:12px; padding:12px 14px; color:#fff;
-  box-shadow:0 4px 12px rgba(22,182,194,.20);
-}
-.kpi.alt{ background:var(--oy-blue); box-shadow:0 4px 12px rgba(47,128,237,.20);}
-.kpi.ok{ background:var(--oy-ok);}
-.kpi.warn{ background:var(--oy-warn);}
-.kpi.amber{ background:var(--oy-amber);}
-.kpi .l{ font-size:.74rem; opacity:.92; font-weight:600; text-transform:uppercase; letter-spacing:.4px;}
-.kpi .v{ font-size:1.6rem; font-weight:800; margin-top:2px;}
-.kpi .d{ font-size:.72rem; opacity:.95; margin-top:2px;}
+.sec{background:var(--oy-teal);color:#fff;padding:.4rem 1rem;
+  border-radius:8px;font-weight:700;margin:.2rem 0 .7rem;
+  font-size:.95rem;display:inline-block;}
+.sec.red{background:var(--oy-warn);}
+.sec.amb{background:var(--oy-amb);}
+.sec.ok{background:var(--oy-ok);}
+.sec.blue{background:var(--oy-blue);}
 
-.critical-box{ background:#FDECEA; border-left:5px solid var(--oy-warn);
-  padding:.6rem 1rem; border-radius:6px; margin-bottom:.7rem; color:#7a1f1c;}
-.alert-box{ background:#FFF6E6; border-left:5px solid var(--oy-amber);
-  padding:.6rem 1rem; border-radius:6px; margin-bottom:.7rem; color:#7a531a;}
-.ok-box{ background:#EAF7EF; border-left:5px solid var(--oy-ok);
-  padding:.6rem 1rem; border-radius:6px; margin-bottom:.7rem; color:#1d6b3a;}
-.info-box{ background:#E9F6F8; border-left:5px solid var(--oy-teal);
-  padding:.7rem 1rem; border-radius:6px; margin-bottom:.7rem; color:#0E6873;}
+.kpi-grid{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:8px;}
+.kpi{flex:1;min-width:130px;background:var(--oy-teal);border-radius:12px;
+  padding:11px 13px;color:#fff;box-shadow:0 4px 12px rgba(22,182,194,.20);}
+.kpi.alt{background:var(--oy-blue);}
+.kpi.ok{background:var(--oy-ok);}
+.kpi.warn{background:var(--oy-warn);}
+.kpi.amber{background:var(--oy-amb);}
+.kpi.dark{background:var(--oy-td);}
+.kpi .l{font-size:.7rem;opacity:.9;font-weight:600;text-transform:uppercase;letter-spacing:.4px;}
+.kpi .v{font-size:1.5rem;font-weight:800;margin-top:2px;}
+.kpi .d{font-size:.69rem;opacity:.93;margin-top:2px;}
 
-/* Tabs */
-.stTabs [data-baseweb="tab-list"]{ gap:4px; flex-wrap:wrap;}
-.stTabs [data-baseweb="tab"]{
-  background:#F1FAFB; border-radius:8px 8px 0 0; padding:6px 12px;
-  font-weight:600; color:var(--oy-teal-d);
-}
-.stTabs [aria-selected="true"]{ background:var(--oy-teal)!important; color:#fff!important;}
+.crit{background:#FDECEA;border-left:5px solid var(--oy-warn);
+  padding:.6rem 1rem;border-radius:6px;margin-bottom:.7rem;color:#7a1f1c;}
+.alrt{background:#FFF6E6;border-left:5px solid var(--oy-amb);
+  padding:.6rem 1rem;border-radius:6px;margin-bottom:.7rem;color:#7a531a;}
+.good{background:#EAF7EF;border-left:5px solid var(--oy-ok);
+  padding:.6rem 1rem;border-radius:6px;margin-bottom:.7rem;color:#1d6b3a;}
+.info{background:#E9F6F8;border-left:5px solid var(--oy-teal);
+  padding:.7rem 1rem;border-radius:6px;margin-bottom:.7rem;color:#0E6873;}
+.invis{background:#F0EAFB;border-left:5px solid #7E57C2;
+  padding:.7rem 1rem;border-radius:6px;margin-bottom:.7rem;color:#4527a0;font-weight:600;}
+
+.stTabs [data-baseweb="tab-list"]{gap:3px;flex-wrap:wrap;}
+.stTabs [data-baseweb="tab"]{background:#F1FAFB;border-radius:8px 8px 0 0;
+  padding:5px 10px;font-weight:600;color:var(--oy-td);}
+.stTabs [aria-selected="true"]{background:var(--oy-teal)!important;color:#fff!important;}
 </style>
 """, unsafe_allow_html=True)
 
 
-# ════════════════════════════════════════════════════════════════════
-#  CONTROL DE ACCESO OPCIONAL
-#  Se activa SOLO si defines el secret "app_password" en Streamlit Cloud
-#  (Settings → Secrets). Sin secret, la app queda abierta (uso local).
-# ════════════════════════════════════════════════════════════════════
-def _get_secret(key):
-    try:
-        return st.secrets.get(key)
-    except Exception:
-        return None
-
+# ══════════════════════════════════════════════════════════════
+#  AUTENTICACIÓN OPCIONAL
+# ══════════════════════════════════════════════════════════════
+def _secret(k):
+    try: return st.secrets.get(k)
+    except: return None
 
 def require_auth():
-    pw = _get_secret("app_password")
-    if not pw:                       # sin contraseña configurada → abierto
-        return
-    if st.session_state.get("auth_ok"):
-        return
-    st.markdown(
-        '<div class="oy-header"><div class="oy-logo">opción<span class="yo"> yo</span></div>'
-        '<div><p class="oy-htitle">Dashboard ATC · Acceso restringido</p>'
-        '<p class="oy-hsub">Introduce la contraseña para continuar</p></div></div>',
-        unsafe_allow_html=True)
-    with st.form("login_oy"):
-        intro = st.text_input("Contraseña", type="password")
-        ok = st.form_submit_button("Entrar")
-    if ok:
-        if intro == pw:
-            st.session_state["auth_ok"] = True
-            st.rerun()
-        st.error("Contraseña incorrecta.")
+    pw = _secret("app_password")
+    if not pw or st.session_state.get("auth_ok"): return
+    st.markdown('<div class="oy-header"><div class="oy-logo">opción<span> yo</span></div>'
+                '<div><p class="oy-htitle">Dashboard ATC · Acceso restringido</p>'
+                '<p class="oy-hsub">Introduce la contraseña para continuar</p></div></div>',
+                unsafe_allow_html=True)
+    with st.form("login"):
+        inp = st.text_input("Contraseña", type="password")
+        if st.form_submit_button("Entrar"):
+            if inp == pw: st.session_state["auth_ok"] = True; st.rerun()
+            else: st.error("Contraseña incorrecta.")
     st.stop()
-
 
 require_auth()
 
 
-# ════════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════
+#  METAS GERENCIALES
+# ══════════════════════════════════════════════════════════════
+META_RATING  = 4.85
+META_TPR     = 6.0      # min (promedio)
+META_SLA2    = 80.0     # %
+META_CAL     = 50.0     # % cobertura encuesta
+META_CHURN   = 8.0      # %
+META_GHOST   = 2.0      # % chats sin respuesta final
+META_TRANSF  = 8.0      # % transferencias
+
+DIAS_ES  = {"Monday":"Lunes","Tuesday":"Martes","Wednesday":"Miércoles",
+            "Thursday":"Jueves","Friday":"Viernes","Saturday":"Sábado","Sunday":"Domingo"}
+DIAS_ORD = ["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"]
+
+REGION = {"1":"EE.UU./Canadá","52":"México","57":"Colombia","58":"Venezuela",
+          "34":"España","54":"Argentina","56":"Chile","51":"Perú","593":"Ecuador",
+          "591":"Bolivia","507":"Panamá","44":"UK","49":"Alemania","55":"Brasil"}
+
+REQ_COLS = {"phone","agent","created_at","labels","rating",
+            "agent_first_message_from_allocation","status"}
+
+
+# ══════════════════════════════════════════════════════════════
 #  FUNCIONES AUXILIARES
-# ════════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════
 def hms_to_min(serie: pd.Series) -> pd.Series:
-    """H:MM:SS → minutos decimales. Errores → NaN."""
     def _p(v):
         try:
             p = str(v).strip().split(":")
-            return int(p[0]) * 60 + int(p[1]) + float(p[2]) / 60
-        except Exception:
-            return np.nan
+            return int(p[0])*60 + int(p[1]) + float(p[2])/60
+        except: return np.nan
     return serie.apply(_p)
 
-
 def fmt_min(m) -> str:
-    """Minutos decimales → HH:MM:SS."""
-    if m is None or (isinstance(m, float) and np.isnan(m)) or m < 0:
-        return "–"
+    if m is None or (isinstance(m, float) and np.isnan(m)) or m < 0: return "–"
     m = float(m)
     return f"{int(m//60):02d}:{int(m%60):02d}:{int((m*60)%60):02d}"
 
+def safe_pct(n, d) -> float:
+    return round(float(n)/float(d)*100, 1) if d else 0.0
 
-def safe_pct(num, den) -> float:
-    return round(float(num) / float(den) * 100, 1) if den else 0.0
-
-
-def safe_mode(serie, default="–"):
-    """mode()[0] a prueba de series vacías."""
-    s = serie.dropna()
+def safe_mode(s, default="–"):
+    s = s.dropna()
     return s.mode().iloc[0] if len(s) and len(s.mode()) else default
 
-
-def semaforo(val, meta, higher_is_better=True) -> str:
-    if val is None or (isinstance(val, float) and np.isnan(val)):
-        return "Sin datos"
-    ok = (val >= meta) if higher_is_better else (val <= meta)
-    signo = "≥" if higher_is_better else "≤"
-    return f"{'✅' if ok else '🔴'} Meta {signo} {meta}"
-
-
-def motivo_principal(labels_series: pd.Series) -> str:
-    flat = labels_series.dropna().str.split(r",\s*").explode().str.strip()
+def motivo_ppal(lbl_serie: pd.Series) -> str:
+    flat = lbl_serie.dropna().str.split(r",\s*").explode().str.strip()
     return flat.mode().iloc[0] if len(flat) and len(flat.mode()) else "–"
 
-
-def kpi_card(label, value, delta="", kind=""):
+def kpi(label, value, delta="", kind=""):
     d = f'<div class="d">{delta}</div>' if delta else ""
     return f'<div class="kpi {kind}"><div class="l">{label}</div><div class="v">{value}</div>{d}</div>'
 
-
-def style_fig(fig, h=320):
-    fig.update_layout(
-        height=h, margin=dict(t=46, b=10, l=10, r=10),
-        font=dict(color=OY_INK, family="Segoe UI, sans-serif"),
-        plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
-        title_font=dict(color=OY_TEAL_DARK, size=15),
-    )
+def sfig(fig, h=320):
+    fig.update_layout(height=h, margin=dict(t=46,b=10,l=10,r=10),
+                      font=dict(color=OY_INK, family="Segoe UI,sans-serif"),
+                      plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
+                      title_font=dict(color=OY_TEAL_DARK, size=14))
     return fig
 
-
-# ════════════════════════════════════════════════════════════════════
-#  METAS GERENCIALES (editar aquí — config central)
-# ════════════════════════════════════════════════════════════════════
-META_RATING    = 4.85
-META_TPR_MED   = 1.0     # min  (00:01:00)
-META_SLA2      = 80.0    # %
-META_SLA5      = 93.0    # %
-META_PCT_CAL   = 50.0    # %  cobertura encuesta
-META_CHURN     = 8.0     # %  cancelaciones de PLAN
-META_CANCEL    = 15.0    # %  cancelaciones totales
-META_RESOL_MED = 90.0    # min (01:30:00)
-
-DIAS_ES = {"Monday":"Lunes","Tuesday":"Martes","Wednesday":"Miércoles",
-           "Thursday":"Jueves","Friday":"Viernes","Saturday":"Sábado","Sunday":"Domingo"}
-DIAS_ORDER_EN = ["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"]
-
-REGION_PREF = {  # prefijo telefónico → región (para segmentación)
-    "1":"EE.UU./Canadá","52":"México","57":"Colombia","58":"Venezuela",
-    "54":"Argentina","56":"Chile","51":"Perú","593":"Ecuador","591":"Bolivia",
-    "507":"Panamá","34":"España","44":"Reino Unido","49":"Alemania","55":"Brasil",
-}
-
-REQ_COLS = {"phone","agent","created_at","finished_at","duration","rating","labels",
-            "status","agent_first_message_from_allocation"}
+def gauge(title, val, ref, rng, steps, suffix="", invert=False):
+    v = round(float(val), 2) if not (isinstance(val,float) and np.isnan(val)) else 0
+    fig = go.Figure(go.Indicator(
+        mode="gauge+number+delta", value=v,
+        number={"suffix":suffix,"font":{"size":26,"color":OY_INK}},
+        delta={"reference":ref,
+               "increasing":{"color":OY_WARN if invert else OY_OK},
+               "decreasing":{"color":OY_OK if invert else OY_WARN}},
+        title={"text":title,"font":{"size":13,"color":OY_TEAL_DARK}},
+        gauge={"axis":{"range":rng},"bar":{"color":OY_TEAL},
+               "steps":steps,
+               "threshold":{"line":{"color":OY_OK,"width":3},"thickness":.85,"value":ref}}))
+    return sfig(fig, 240)
 
 
-# ════════════════════════════════════════════════════════════════════
-#  CARGA Y LIMPIEZA  (loader robusto)
-# ════════════════════════════════════════════════════════════════════
-@st.cache_data(show_spinner="⏳ Procesando treble.csv…")
+# ══════════════════════════════════════════════════════════════
+#  CARGA Y LIMPIEZA
+# ══════════════════════════════════════════════════════════════
+@st.cache_data(show_spinner="⏳ Procesando datos…")
 def load_data(file) -> pd.DataFrame:
-    try:
-        df = pd.read_csv(file, dtype=str)
-    except Exception as e:
-        st.error(f"No se pudo leer el archivo: {e}")
-        st.stop()
-
+    try: df = pd.read_csv(file, dtype=str)
+    except Exception as e: st.error(f"No se pudo leer: {e}"); st.stop()
     faltan = REQ_COLS - set(df.columns)
-    if faltan:
-        st.error(f"El CSV no tiene las columnas requeridas: {sorted(faltan)}")
-        st.stop()
+    if faltan: st.error(f"Faltan columnas: {sorted(faltan)}"); st.stop()
+    df = df.drop(columns=[c for c in ["username"] if c in df.columns])
 
-    df = df.drop(columns=[c for c in ["username"] if c in df.columns])  # columna muerta
+    # Fechas
+    for c in ["created_at","assigned_at","finished_at","agent_first_message","last_message"]:
+        if c in df.columns: df[c] = pd.to_datetime(df[c], errors="coerce")
 
-    # 1. Fechas
-    for c in ["created_at", "assigned_at", "finished_at"]:
-        if c in df.columns:
-            df[c] = pd.to_datetime(df[c], errors="coerce")
+    # Tiempos operacionales
+    df["tpr_min"]     = hms_to_min(df["agent_first_message_from_allocation"])
+    df["dur_min"]     = hms_to_min(df.get("duration", pd.Series(dtype=str)))
+    df["resol_min"]   = ((df["finished_at"] - df["created_at"]).dt.total_seconds()/60).clip(lower=0)
 
-    # 2. Tiempos operacionales
-    df["tpr_min"] = hms_to_min(df["agent_first_message_from_allocation"])  # 1ra respuesta (agente)
-    df["dur_min"] = hms_to_min(df["duration"])                            # interacción
+    # Handle time ACTIVO (primer mensaje agente → último mensaje)
+    if "agent_first_message" in df.columns and "last_message" in df.columns:
+        df["handle_min"] = ((df["last_message"] - df["agent_first_message"])
+                            .dt.total_seconds()/60).clip(lower=0)
+    else:
+        df["handle_min"] = np.nan
 
-    # 3. Resolución (finished - created)
-    df["resol_min"] = ((df["finished_at"] - df["created_at"]).dt.total_seconds() / 60).clip(lower=0)
+    # Lag asignación (creación → asignación)
+    if "assigned_at" in df.columns:
+        df["lag_asig_min"] = ((df["assigned_at"] - df["created_at"])
+                              .dt.total_seconds()/60).clip(lower=0)
+    else:
+        df["lag_asig_min"] = np.nan
 
-    # 4. Rating numérico + cobertura
+    # Rating
     df["rating_num"] = pd.to_numeric(df["rating"].replace("-", np.nan), errors="coerce")
     df["calificado"] = df["rating_num"].notna()
 
-    # 5. Tiempo
-    df["fecha"]      = df["created_at"].dt.date
-    df["hora"]       = df["created_at"].dt.hour
+    # Tiempo
+    df["fecha"]   = df["created_at"].dt.date
+    df["hora"]    = df["created_at"].dt.hour
     df["dia_nombre"] = df["created_at"].dt.day_name()
-    df["semana"]     = df["created_at"].dt.to_period("W").apply(
+    df["semana"]  = df["created_at"].dt.to_period("W").apply(
         lambda p: p.start_time.date() if pd.notna(p) else None)
-    df["mes"]        = df["created_at"].dt.to_period("M").apply(
+    df["mes"]     = df["created_at"].dt.to_period("M").apply(
         lambda p: p.start_time.date() if pd.notna(p) else None)
 
-    # 6. SLA flags + outliers
+    # SLA
     df["sla_2min"]  = df["tpr_min"] <= 2
     df["sla_5min"]  = df["tpr_min"] <= 5
     df["sla_15min"] = df["tpr_min"] <= 15
     df["sla_30min"] = df["tpr_min"] <= 30
-    df["sla_over30"]= df["tpr_min"] > 30
-    df["dur_outlier"] = df["dur_min"] > 300  # >5h
+    df["dur_outlier"] = df["dur_min"] > 300
 
-    # 7. Cancelaciones — SEPARADAS (bug v1 corregido)
+    # Cancelaciones — 3 BLOQUES SEPARADOS
     lbl = df["labels"].fillna("")
-    df["es_churn_plan"]     = lbl.str.contains(r"Cancelar plan|Cancelaci[oó]n de plan", case=False, regex=True)
-    df["es_reprogramacion"] = lbl.str.contains(r"Cancelaci[oó]n \+24|Cancelaci[oó]n tard|Postergaci|Esp\. cancela", case=False, regex=True)
-    df["es_cancelacion"]    = df["es_churn_plan"] | df["es_reprogramacion"]
+    df["es_churn"]   = lbl.str.contains(r"Cancelar plan|Reembolso", case=False, regex=True)
+    df["es_reprog"]  = lbl.str.contains(
+        r"Cancelaci[oó]n \+24|Cancelaci[oó]n tard|Postergaci|Esp\. cancela",
+        case=False, regex=True)
+    df["es_cancel"]  = df["es_churn"] | df["es_reprog"]
 
-    # 8. Etiqueta principal + región
-    df["label_principal"] = lbl.replace("", "Sin etiqueta").str.split(r",\s*").str[0].str.strip()
-    cc = df["phone"].str.extract(r"^\+(\d{1,3})")[0]
-    df["region"] = cc.map(REGION_PREF).fillna("Otros")
+    # Chats fantasma (último mensaje del cliente)
+    if "last_message_sender" in df.columns:
+        df["ghost"] = df["last_message_sender"].str.upper().str.contains(
+            "USER|CONTACT|CLIENT", na=False)
+    else:
+        df["ghost"] = False
+
+    # Transferidos
+    df["transferido"] = df["last_transfer_from"].notna() if "last_transfer_from" in df.columns else False
+
+    # Sin etiqueta
+    df["sin_label"] = lbl.str.strip().eq("")
+
+    # Región
+    cc = df["phone"].str.extract(r"^\+?(\d{1,3})")[0]
+    df["region"] = cc.map(REGION).fillna("Otros")
+
+    # Etiqueta principal
+    df["label_ppal"] = lbl.replace("", "Sin etiqueta").str.split(r",\s*").str[0].str.strip()
+
+    # Reintentos mismo día
+    df["date"] = df["created_at"].dt.date
+    reint = df.groupby(["phone","date"]).transform("size")
+    df["reintento"] = reint > 1
 
     return df
 
 
-@st.cache_data(show_spinner="⏳ Cargando export…")
-def load_simple(file) -> pd.DataFrame:
-    return pd.read_csv(file, dtype=str)
-
-
-def build_agent_kpis(data: pd.DataFrame, usar_mediana=True) -> pd.DataFrame:
-    """KPIs por agente. usar_mediana=True → robusto a outliers (corrige bug v1)."""
-    agg = np.median if usar_mediana else np.mean
+def build_agent_kpis(data: pd.DataFrame) -> pd.DataFrame:
     rows = []
-    for agent, g in data.groupby("agent"):
+    for ag, g in data.groupby("agent"):
         n   = len(g)
         cal = g["rating_num"].dropna(); nc = len(cal)
-        tpr = g["tpr_min"].dropna();    nt = len(tpr)
-        res = g.loc[g["resol_min"] > 0, "resol_min"].dropna()
-        dur = g.loc[~g["dur_outlier"], "dur_min"].dropna()
+        tpr = g["tpr_min"].dropna();   nt = len(tpr)
+        hnd = g.loc[g["handle_min"] < 500, "handle_min"].dropna()
         rows.append({
-            "Agente":           agent,
-            "Chats Atendidos":  n,
-            "Calificación":     round(float(cal.mean()), 2) if nc else np.nan,
-            "% Calificados":    safe_pct(nc, n),
-            "Primera respuesta": fmt_min(agg(tpr)) if nt else "–",
-            "T. interacción":   fmt_min(agg(dur)) if len(dur) else "–",
-            "T. resolución":    fmt_min(agg(res)) if len(res) else "–",
-            "TPR val (min)":    round(float(agg(tpr)), 2) if nt else np.nan,
-            "% SLA ≤2min":      safe_pct((tpr <= 2).sum(), nt),
-            "% SLA ≤5min":      safe_pct((tpr <= 5).sum(), nt),
-            "% SLA >30min":     safe_pct((tpr > 30).sum(), nt),
-            "% Churn plan":     safe_pct(g["es_churn_plan"].sum(), n),
-            "% Reprogram.":     safe_pct(g["es_reprogramacion"].sum(), n),
+            "Agente":        ag,
+            "Chats":         n,
+            "% Total":       safe_pct(n, len(data)),
+            "TPR prom (min)": round(float(tpr.mean()), 2) if nt else np.nan,
+            "TPR val":       round(float(tpr.mean()), 2) if nt else np.nan,
+            "Handle (min)":  round(float(hnd.median()), 1) if len(hnd) else np.nan,
+            "Rating":        round(float(cal.mean()), 2) if nc else np.nan,
+            "% Calificados": safe_pct(nc, n),
+            "% Churn":       safe_pct(g["es_churn"].sum(), n),
+            "Cola":          safe_mode(g["tag"]) if "tag" in g.columns else "–",
+            "Nivel":         "",
         })
-    return pd.DataFrame(rows).sort_values("Chats Atendidos", ascending=False)
+    df_ag = pd.DataFrame(rows).sort_values("Chats", ascending=False)
+    def nivel(r):
+        if (not np.isnan(r["Rating"]) and r["Rating"] >= META_RATING and
+                not np.isnan(r["TPR val"]) and r["TPR val"] <= 2):
+            return "⭐ Top"
+        if (not np.isnan(r["Rating"]) and r["Rating"] < 4.5) or \
+           (not np.isnan(r["TPR val"]) and r["TPR val"] > 10) or \
+           r["% Churn"] > 40:
+            return "⚠️ Atención"
+        return "✅ Bueno"
+    df_ag["Nivel"] = df_ag.apply(nivel, axis=1)
+    return df_ag
 
 
-# ════════════════════════════════════════════════════════════════════
+def top_clientes(data: pd.DataFrame, n: int = 15) -> pd.DataFrame:
+    rows = []
+    for ph, g in data.groupby("phone"):
+        rows.append({
+            "Teléfono":         ph,
+            "Cliente":          safe_mode(g["contact"]) if "contact" in g.columns else "–",
+            "Contactos":        len(g),
+            "Motivo principal": motivo_ppal(g["labels"]),
+            "Cola":             safe_mode(g["tag"]) if "tag" in g.columns else "–",
+            "Región":           safe_mode(g["region"]),
+            "Agente frecuente": safe_mode(g["agent"]),
+            "Rating prom":      round(float(g["rating_num"].mean()), 2)
+                                if g["rating_num"].notna().any() else np.nan,
+            "¿Churn?":          "Sí" if g["es_churn"].any() else "No",
+            "Última inter.":    str(g["created_at"].max().date())
+                                if g["created_at"].notna().any() else "–",
+        })
+    return pd.DataFrame(rows).sort_values("Contactos", ascending=False).head(n)
+
+
+# ══════════════════════════════════════════════════════════════
 #  HEADER DE MARCA
-# ════════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════
 st.markdown("""
 <div class="oy-header">
-  <div class="oy-logo">opción<span class="yo"> yo</span></div>
+  <div class="oy-logo">opción<span> yo</span></div>
   <div>
     <p class="oy-htitle">Dashboard de Gestión · Atención al Cliente</p>
-    <p class="oy-hsub">Vista Gerencial · powered by Treble · datos de chats atendidos</p>
+    <p class="oy-hsub">Vista Gerencial · powered by Treble · v3</p>
   </div>
-</div>
-""", unsafe_allow_html=True)
+</div>""", unsafe_allow_html=True)
 
 
-# ════════════════════════════════════════════════════════════════════
-#  SIDEBAR — DATOS + FILTROS
-# ════════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════
+#  SIDEBAR
+# ══════════════════════════════════════════════════════════════
 with st.sidebar:
-    st.markdown("### 🟢 Opción Yo · ATC")
-    up = st.file_uploader("Fuente principal (treble.csv)", type=["csv"], key="main")
+    st.markdown("### 🟢 Opción Yo · ATC v3")
+    up = st.file_uploader("📂 treble.csv", type=["csv"], key="main")
     source = up if up is not None else "treble.csv"
     try:
         df_raw = load_data(source)
@@ -369,638 +369,1100 @@ with st.sidebar:
     fmin = df_raw["created_at"].min().date()
     fmax = df_raw["created_at"].max().date()
     rango = st.date_input("📅 Fechas", value=(fmin, fmax), min_value=fmin, max_value=fmax)
-    f_ini = rango[0] if len(rango) == 2 else fmin
-    f_fin = rango[1] if len(rango) == 2 else fmax
+    f_ini = rango[0] if len(rango)==2 else fmin
+    f_fin = rango[1] if len(rango)==2 else fmax
 
-    agentes_sel = st.multiselect("👤 Agentes", sorted(df_raw["agent"].dropna().unique()),
-                                 placeholder="Todos")
-    tags_sel    = st.multiselect("📂 Grupo / Cola", sorted(df_raw["tag"].dropna().unique()),
-                                 placeholder="Todos")
-    region_sel  = st.multiselect("🌎 Región", sorted(df_raw["region"].dropna().unique()),
-                                 placeholder="Todas")
-    all_labels  = sorted({l.strip() for lst in df_raw["labels"].dropna() for l in lst.split(",")})
-    labels_sel  = st.multiselect("🏷️ Etiquetas", all_labels, placeholder="Todas")
-    estados_sel = st.multiselect("🔖 Estado", sorted(df_raw["status"].dropna().unique()),
-                                 placeholder="Todos")
+    ags   = st.multiselect("👤 Agentes", sorted(df_raw["agent"].dropna().unique()), placeholder="Todos")
+    colas = st.multiselect("📂 Cola/Equipo", sorted(df_raw["tag"].dropna().unique()), placeholder="Todas") if "tag" in df_raw.columns else []
+    regs  = st.multiselect("🌎 Región", sorted(df_raw["region"].dropna().unique()), placeholder="Todas")
+    all_lbl = sorted({l.strip() for lst in df_raw["labels"].dropna() for l in lst.split(",") if l.strip()})
+    labs  = st.multiselect("🏷️ Etiquetas", all_lbl, placeholder="Todas")
+    ests  = st.multiselect("🔖 Estado", sorted(df_raw["status"].dropna().unique()), placeholder="Todos")
 
     st.divider()
-    granularidad = st.radio("Evolución por", ["Día", "Semana", "Mes"], index=1, horizontal=True)
-    gran_col = {"Día":"fecha", "Semana":"semana", "Mes":"mes"}[granularidad]
-    usar_mediana = st.toggle("Usar mediana (robusto a outliers)", value=True,
-                             help="Recomendado. Desactívalo para reproducir los promedios del PDF de Treble.")
-    st.divider()
-    st.markdown("#### 📎 Exports opcionales de Treble")
-    up_out  = st.file_uploader("Outbound / Consumo", type=["csv"], key="out")
-    up_fail = st.file_uploader("Fallas de envío", type=["csv"], key="fail")
-    up_hsm  = st.file_uploader("HSM", type=["csv"], key="hsm")
-    up_conx = st.file_uploader("Horarios / Conexión", type=["csv"], key="conx")
-    st.caption("Opción Yo · ATC · v2")
+    gran = st.radio("Evolución por", ["Día","Semana","Mes"], index=1, horizontal=True)
+    gc   = {"Día":"fecha","Semana":"semana","Mes":"mes"}[gran]
+    outliers_on = st.toggle("Incluir outliers duración >5h", value=False)
+    st.caption(f"Metas: Calif≥{META_RATING} · TPR≤{META_TPR}min · SLA2≥{META_SLA2}% · Churn≤{META_CHURN}%")
 
-
-# ════════════════════════════════════════════════════════════════════
-#  APLICAR FILTROS
-# ════════════════════════════════════════════════════════════════════
+# ── Aplicar filtros ──────────────────────────────────────────
 df = df_raw.copy()
 df = df[(df["created_at"].dt.date >= f_ini) & (df["created_at"].dt.date <= f_fin)]
-if agentes_sel: df = df[df["agent"].isin(agentes_sel)]
-if tags_sel:    df = df[df["tag"].isin(tags_sel)]
-if region_sel:  df = df[df["region"].isin(region_sel)]
-if estados_sel: df = df[df["status"].isin(estados_sel)]
-if labels_sel:
-    df = df[df["labels"].fillna("").str.contains("|".join(map(lambda s: s.replace("+","\\+"), labels_sel)), case=False)]
-
+if ags:   df = df[df["agent"].isin(ags)]
+if colas: df = df[df["tag"].isin(colas)]
+if regs:  df = df[df["region"].isin(regs)]
+if ests:  df = df[df["status"].isin(ests)]
+if labs:
+    pat = "|".join(l.replace("+","\\+").replace(".","\\+") for l in labs)
+    df = df[df["labels"].fillna("").str.contains(pat, case=False)]
+if not outliers_on:
+    df = df[~df["dur_outlier"].fillna(False)]
 if df.empty:
     st.warning("No hay datos para los filtros seleccionados.")
     st.stop()
 
-# ── KPIs globales ────────────────────────────────────────────────────
-total      = len(df)
+# ── KPIs globales ────────────────────────────────────────────
+N          = len(df)
 n_cal      = int(df["calificado"].sum())
-pct_cal    = safe_pct(n_cal, total)
-rating_prom= df["rating_num"].mean()
+pct_cal    = safe_pct(n_cal, N)
+rating     = df["rating_num"].mean()
 tpr_v      = df["tpr_min"].dropna()
+tpr_prom   = tpr_v.mean() if len(tpr_v) else np.nan
+tpr_p90    = tpr_v.quantile(.9) if len(tpr_v) else np.nan
 tpr_med    = tpr_v.median() if len(tpr_v) else np.nan
-res_v      = df.loc[df["resol_min"] > 0, "resol_min"].dropna()
-res_med    = res_v.median() if len(res_v) else np.nan
-dur_fil    = df.loc[~df["dur_outlier"], "dur_min"].dropna()
-dur_med    = dur_fil.median() if len(dur_fil) else np.nan
 pct_sla2   = safe_pct(df["sla_2min"].sum(), len(tpr_v)) if len(tpr_v) else 0
 pct_sla5   = safe_pct(df["sla_5min"].sum(), len(tpr_v)) if len(tpr_v) else 0
-pct_over30 = safe_pct(df["sla_over30"].sum(), len(tpr_v)) if len(tpr_v) else 0
-pct_churn  = safe_pct(df["es_churn_plan"].sum(), total)
-pct_reprog = safe_pct(df["es_reprogramacion"].sum(), total)
-pct_cancel = safe_pct(df["es_cancelacion"].sum(), total)
-pct_outlier= safe_pct(df["dur_outlier"].sum(), total)
+pct_over30 = safe_pct((tpr_v > 30).sum(), len(tpr_v)) if len(tpr_v) else 0
+pct_churn  = safe_pct(df["es_churn"].sum(), N)
+pct_reprog = safe_pct(df["es_reprog"].sum(), N)
+pct_ghost  = safe_pct(df["ghost"].sum(), N)
+pct_transf = safe_pct(df["transferido"].sum(), N)
+pct_sin_lbl= safe_pct(df["sin_label"].sum(), N)
 csat       = safe_pct((df["rating_num"] >= 4).sum(), n_cal) if n_cal else 0
-detractor  = safe_pct((df["rating_num"] <= 3).sum(), n_cal) if n_cal else 0
+det        = safe_pct((df["rating_num"] <= 3).sum(), n_cal) if n_cal else 0
+prom5      = safe_pct((df["rating_num"] == 5).sum(), n_cal) if n_cal else 0
+contactos  = df.groupby("phone").size()
+n_recur    = int((contactos >= 2).sum())
+pct_vol_recur = safe_pct(contactos[contactos>=2].sum(), N)
+hnd_v      = df.loc[df["handle_min"] < 500, "handle_min"].dropna()
+hnd_med    = hnd_v.median() if len(hnd_v) else np.nan
+lag_v      = df["lag_asig_min"].dropna()
+lag_prom   = lag_v.mean() if len(lag_v) else np.nan
+n_ghost    = int(df["ghost"].sum())
+n_reint    = int(df["reintento"].sum())
 hora_pico  = int(safe_mode(df["hora"], 0))
 dia_pico   = DIAS_ES.get(safe_mode(df["dia_nombre"]), "–")
+top_motivo = motivo_ppal(df["labels"])
+ag_churn   = build_agent_kpis(df)
 
-# ── Clientes recurrentes (quién más contacta) ───────────────────────
-_contactos     = df.groupby("phone").size()
-n_clientes     = int(_contactos.size)
-n_recurrentes  = int((_contactos >= 2).sum())
-chats_recur    = int(_contactos[_contactos >= 2].sum())
-pct_vol_recur  = safe_pct(chats_recur, total)
-max_contactos  = int(_contactos.max()) if len(_contactos) else 0
+# ── KPIs de calificación detallados (fuente: rating_num 1–5) ─────────
+# Solo sobre los {n_cal} chats que SÍ calificaron (36% del total).
+# Los que no calificaron quedan fuera — eso se advierte en pantalla.
+n_rating  = {i: int((df["rating_num"] == i).sum()) for i in [1,2,3,4,5]}
+n_bajas   = n_rating[1] + n_rating[2] + n_rating[3]   # 1★ 2★ 3★
+n_altas   = n_rating[4] + n_rating[5]                  # 4★ 5★
+pct_1     = safe_pct(n_rating[1], n_cal)
+pct_2     = safe_pct(n_rating[2], n_cal)
+pct_3     = safe_pct(n_rating[3], n_cal)
+pct_4     = safe_pct(n_rating[4], n_cal)
+pct_5     = safe_pct(n_rating[5], n_cal)
+pct_bajas = safe_pct(n_bajas, n_cal)
+pct_altas = safe_pct(n_altas, n_cal)
+prom_bajas = df.loc[df["rating_num"] <= 3, "rating_num"].mean()
+prom_altas = df.loc[df["rating_num"] >= 4, "rating_num"].mean()
 
-
-def build_top_clientes(data: pd.DataFrame, n: int = 15) -> pd.DataFrame:
-    """Top clientes por frecuencia de contacto, con su motivo principal."""
-    rows = []
-    for phone, g in data.groupby("phone"):
-        rows.append({
-            "Teléfono":           phone,
-            "Cliente":            safe_mode(g["contact"]),
-            "Contactos":          len(g),
-            "Motivo principal":   motivo_principal(g["labels"]),
-            "Región":             safe_mode(g["region"]),
-            "Agente frecuente":   safe_mode(g["agent"]),
-            "Calif. prom":        round(float(g["rating_num"].mean()), 2)
-                                  if g["rating_num"].notna().any() else np.nan,
-            "¿Churn plan?":       "Sí" if g["es_churn_plan"].any() else "No",
-            "Última interacción": str(g["created_at"].max().date())
-                                  if g["created_at"].notna().any() else "–",
-        })
-    return (pd.DataFrame(rows).sort_values("Contactos", ascending=False).head(n))
-
-
-# ════════════════════════════════════════════════════════════════════
-#  TABS — estructura espejo del PDF + mejoras
-# ════════════════════════════════════════════════════════════════════
-(tab_exec, tab_ag, tab_sd, tab_tpr, tab_lab, tab_canc, tab_evo, tab_det,
- tab_out, tab_fail, tab_inv, tab_hsm, tab_conx) = st.tabs([
-    "🏠 Resumen Ejecutivo", "📊 Rendimiento Agentes", "📅 Semana / Día",
-    "⚡ Primera Respuesta", "🏷️ Etiquetas", "🚨 Cancelaciones & Retención",
-    "📈 Evolución", "📋 Métricas Chats",
-    "📤 Outbound", "❌ Fallas Envío", "💰 Inversión", "📨 HSM", "🟢 Conexión",
+# ══════════════════════════════════════════════════════════════
+#  TABS
+# ══════════════════════════════════════════════════════════════
+(t1, t2, t3, t4, t5, t6, t7, t8, t9) = st.tabs([
+    "🏠 Resumen Ejecutivo",
+    "⭐ Calificación",
+    "🚨 Cancelaciones & Churn",
+    "⚡ Tiempo de Respuesta",
+    "📊 Rendimiento Agentes",
+    "🏷️ Etiquetas & Motivos",
+    "📞 Clientes que más llaman",
+    "📋 Explorador de Chats",
+    "💡 Insights & Recomendaciones",
 ])
 
 
-# ╔══════════════════════════════════════════════════════════════════╗
-#  1 · RESUMEN EJECUTIVO
-# ╚══════════════════════════════════════════════════════════════════╝
-with tab_exec:
-    st.caption(f"**Período:** {f_ini} → {f_fin}  ·  **{total:,}** chats  ·  "
-               f"**{df['agent'].nunique()}** agentes  ·  Pico: {dia_pico} {hora_pico:02d}:00h")
+# ╔═══════════════════════════════════════╗
+#  TAB 1 — RESUMEN EJECUTIVO
+# ╚═══════════════════════════════════════╝
+with t1:
+    st.caption(
+        f"📅 **{f_ini} → {f_fin}** · {N:,} chats · {df['agent'].nunique()} agentes · "
+        f"Pico: {dia_pico} {hora_pico:02d}h · Fuente: treble.csv"
+    )
 
-    # Alertas automáticas
+    # ── Alertas automáticas ──────────────────────────────────
     if pct_churn > META_CHURN:
-        st.markdown(f'<div class="critical-box">🚨 <b>CHURN DE PLAN: {pct_churn}%</b> '
-                    f'({int(df["es_churn_plan"].sum()):,} chats de "Cancelar plan", umbral {META_CHURN}%). '
-                    f'Es cancelación de suscripción = pérdida de ingresos. Máxima prioridad de retención.</div>',
-                    unsafe_allow_html=True)
-    if pct_cal < META_PCT_CAL:
-        st.markdown(f'<div class="alert-box">⚠️ <b>Cobertura de encuesta {pct_cal}%</b> — el rating se calcula '
-                    f'solo sobre {n_cal:,}/{total:,} chats. El insatisfecho suele NO calificar: no leer 4,8 como satisfacción global.</div>',
-                    unsafe_allow_html=True)
+        st.markdown(
+            f'<div class="crit">🚨 <b>CHURN DE PLAN {pct_churn}%</b> — '
+            f'{int(df["es_churn"].sum()):,} chats "Cancelar plan / Reembolso" '
+            f'(meta ≤{META_CHURN}%). Pérdida directa de ingresos.</div>',
+            unsafe_allow_html=True)
+    if pct_ghost > META_GHOST:
+        st.markdown(
+            f'<div class="crit">👻 <b>CHATS FANTASMA {pct_ghost}%</b> — '
+            f'{n_ghost:,} chats cerrados con el último mensaje del cliente. '
+            f'Nadie respondió antes del cierre.</div>',
+            unsafe_allow_html=True)
+    if pct_cal < META_CAL:
+        st.markdown(
+            f'<div class="alrt">⚠️ <b>Cobertura encuesta {pct_cal}%</b> — '
+            f'rating calculado sobre {n_cal:,} de {N:,} chats. '
+            f'El insatisfecho abandona sin calificar: el promedio sobreestima la satisfacción real.</div>',
+            unsafe_allow_html=True)
     if pct_sla2 >= META_SLA2:
-        st.markdown(f'<div class="ok-box">✅ <b>Operación de respuesta de primer nivel:</b> '
-                    f'{pct_sla2}% responde en ≤2 min (mediana {fmt_min(tpr_med)}).</div>', unsafe_allow_html=True)
+        st.markdown(
+            f'<div class="good">✅ <b>SLA ≤2 min: {pct_sla2}%</b> — '
+            f'mediana {fmt_min(tpr_med)}. Operación de respuesta de primer nivel.</div>',
+            unsafe_allow_html=True)
 
-    # Banner KPI Opción Yo
-    st.markdown('<div class="sec-title">📌 Indicadores Clave</div>', unsafe_allow_html=True)
+    # ╌╌╌ BLOQUE 1: TOTALES OPERACIONALES ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+    st.markdown('<div class="sec">📊 Totales Operacionales</div>', unsafe_allow_html=True)
+    st.caption("Fuente: todos los campos del CSV de Treble (treble.csv). "
+               "Los chats excluidos por filtro no se cuentan.")
     st.markdown('<div class="kpi-grid">' +
-        kpi_card("Chats atendidos", f"{total:,}", kind="alt") +
-        kpi_card("CSAT (muestra)", f"{rating_prom:.2f}", f"cobertura {pct_cal}%",
-                 kind="ok" if rating_prom >= META_RATING else "amber") +
-        kpi_card("1ra respuesta (mediana)", fmt_min(tpr_med),
-                 semaforo(tpr_med, META_TPR_MED, False), kind="ok" if tpr_med <= META_TPR_MED else "warn") +
-        kpi_card("% SLA ≤2 min", f"{pct_sla2}%", kind="ok" if pct_sla2 >= META_SLA2 else "warn") +
-        kpi_card("Churn de plan", f"{pct_churn}%", f"meta ≤{META_CHURN}%",
-                 kind="warn" if pct_churn > META_CHURN else "ok") +
-        kpi_card("Vol. recurrente", f"{pct_vol_recur}%", f"{n_recurrentes:,} clientes ≥2", kind="amber") +
-        kpi_card("Reprogramaciones", f"{pct_reprog}%", kind="amber") +
+        kpi("Chats totales", f"{N:,}", f"{df['agent'].nunique()} agentes", kind="alt") +
+        kpi("Clientes únicos", f"{len(contactos):,}",
+            f"{N/len(contactos):.2f} chats/cliente prom") +
+        kpi("TPR promedio", fmt_min(tpr_prom),
+            f"= {tpr_prom:.1f} min · como lo calcula Treble",
+            kind="ok" if not np.isnan(tpr_prom) and tpr_prom <= META_TPR else "warn") +
+        kpi("% SLA ≤2 min", f"{pct_sla2}%",
+            f"{int(df['sla_2min'].sum()):,} de {len(tpr_v):,} chats",
+            kind="ok" if pct_sla2 >= META_SLA2 else "warn") +
+        kpi("% SLA ≤5 min", f"{pct_sla5}%", kind="ok" if pct_sla5 >= 90 else "amber") +
+        kpi("Churn de plan", f"{pct_churn}%",
+            f"{int(df['es_churn'].sum()):,} chats · meta ≤{META_CHURN}%",
+            kind="warn" if pct_churn > META_CHURN else "ok") +
         '</div>', unsafe_allow_html=True)
 
-    st.markdown("")
-    g1, g2, g3 = st.columns(3)
+    # ╌╌╌ BLOQUE 2: CALIFICACIÓN TOTAL DETALLADA ╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+    st.markdown('<div class="sec">⭐ Calificación Total (detalle por estrella)</div>',
+                unsafe_allow_html=True)
+    st.caption(
+        f"Fuente: columna **rating** del CSV. Solo {n_cal:,} de {N:,} chats "
+        f"({pct_cal}%) recibieron calificación. Los {N-n_cal:,} sin calificar no entran en los promedios. "
+        f"Se muestra el desglose para que gerencia vea la distribución real, no solo el promedio.")
 
-    def gauge(title, val, ref, rng, steps, suffix="", invert=False):
-        v = round(float(val), 2) if not pd.isna(val) else 0
-        fig = go.Figure(go.Indicator(
-            mode="gauge+number+delta", value=v,
-            number={"suffix": suffix, "font": {"size": 28, "color": OY_INK}},
-            delta={"reference": ref,
-                   "increasing": {"color": OY_WARN if invert else OY_OK},
-                   "decreasing": {"color": OY_OK if invert else OY_WARN}},
-            title={"text": title, "font": {"size": 14, "color": OY_TEAL_DARK}},
-            gauge={"axis": {"range": rng}, "bar": {"color": OY_TEAL},
-                   "steps": steps,
-                   "threshold": {"line": {"color": OY_OK, "width": 3}, "thickness": .85, "value": ref}}))
-        return style_fig(fig, 250)
+    # Fila 1: KPIs globales de calificación
+    st.markdown('<div class="kpi-grid">' +
+        kpi("Promedio global (muestra)", f"{rating:.2f} ★",
+            f"sobre {n_cal:,} calificados ({pct_cal}%)",
+            kind="ok" if rating >= META_RATING else "amber") +
+        kpi("Calificaciones 4★ y 5★", f"{n_altas:,}",
+            f"{pct_altas}% de los que calificaron — promedio {prom_altas:.2f}★", kind="ok") +
+        kpi("Calificaciones 1★, 2★ y 3★", f"{n_bajas:,}",
+            f"{pct_bajas}% — promedio {prom_bajas:.2f}★ · detractores reales",
+            kind="warn" if pct_bajas > 5 else "amber") +
+        kpi("Sin calificar", f"{N - n_cal:,}",
+            f"{100 - pct_cal}% del total — pueden ser insatisfechos", kind="dark") +
+        '</div>', unsafe_allow_html=True)
 
-    with g1:
-        st.plotly_chart(gauge("⭐ Calificación", rating_prom, META_RATING, [1,5],
+    # Fila 2: Desglose estrella por estrella
+    st.markdown("**Desglose estrella por estrella** — sobre los chats que sí calificaron:")
+    st.markdown('<div class="kpi-grid">' +
+        kpi("1 ★ (muy malo)", f"{n_rating[1]:,}", f"{pct_1}%", kind="warn") +
+        kpi("2 ★ (malo)", f"{n_rating[2]:,}", f"{pct_2}%",
+            kind="warn" if pct_2 > 2 else "amber") +
+        kpi("3 ★ (regular)", f"{n_rating[3]:,}", f"{pct_3}%",
+            kind="amber" if pct_3 > 3 else "") +
+        kpi("4 ★ (bueno)", f"{n_rating[4]:,}", f"{pct_4}%", kind="ok") +
+        kpi("5 ★ (excelente)", f"{n_rating[5]:,}", f"{pct_5}%", kind="ok") +
+        '</div>', unsafe_allow_html=True)
+
+    # Gráfico distribución de estrellas + gauges
+    col_g1, col_g2, col_g3, col_g4 = st.columns([1.4, 1, 1, 1])
+    with col_g1:
+        dist_df = pd.DataFrame({
+            "Estrella": ["1★","2★","3★","4★","5★"],
+            "Chats":    [n_rating[i] for i in [1,2,3,4,5]],
+            "%":        [pct_1, pct_2, pct_3, pct_4, pct_5],
+        })
+        colores = [OY_WARN, "#FF7043", OY_AMBER, OY_TEAL, OY_OK]
+        fig_dist = go.Figure()
+        for i, row in dist_df.iterrows():
+            fig_dist.add_trace(go.Bar(
+                x=[row["Chats"]], y=[row["Estrella"]],
+                orientation="h", marker_color=colores[i],
+                text=f'{row["Chats"]:,}  ({row["%"]:.1f}%)',
+                textposition="outside", name=row["Estrella"],
+                showlegend=False))
+        fig_dist.update_layout(
+            title="Distribución de calificaciones",
+            yaxis={"categoryorder":"array","categoryarray":["1★","2★","3★","4★","5★"]},
+            barmode="stack")
+        st.plotly_chart(sfig(fig_dist, 260), use_container_width=True)
+    with col_g2:
+        st.plotly_chart(gauge("⭐ Promedio", rating, META_RATING, [1,5],
             [{"range":[1,4],"color":"#FADBD8"},{"range":[4,META_RATING],"color":"#FDEBD0"},
              {"range":[META_RATING,5],"color":"#D5F5E3"}]), use_container_width=True)
-    with g2:
-        tprc = min(float(tpr_med) if not pd.isna(tpr_med) else 0, 30)
-        st.plotly_chart(gauge("⚡ 1ra respuesta (min)", tprc, META_TPR_MED, [0,30],
-            [{"range":[0,META_TPR_MED],"color":"#D5F5E3"},{"range":[META_TPR_MED,10],"color":"#FDEBD0"},
-             {"range":[10,30],"color":"#FADBD8"}], " min", True), use_container_width=True)
-    with g3:
-        st.plotly_chart(gauge("💸 Churn de plan", pct_churn, META_CHURN, [0,30],
+    with col_g3:
+        st.plotly_chart(gauge("⚡ TPR prom (min)", min(tpr_prom or 30, 30), META_TPR, [0,30],
+            [{"range":[0,META_TPR],"color":"#D5F5E3"},{"range":[META_TPR,15],"color":"#FDEBD0"},
+             {"range":[15,30],"color":"#FADBD8"}]," min", True), use_container_width=True)
+    with col_g4:
+        st.plotly_chart(gauge("💸 Churn", pct_churn, META_CHURN, [0,30],
             [{"range":[0,META_CHURN],"color":"#D5F5E3"},{"range":[META_CHURN,18],"color":"#FDEBD0"},
-             {"range":[18,30],"color":"#FADBD8"}], "%", True), use_container_width=True)
+             {"range":[18,30],"color":"#FADBD8"}],"%", True), use_container_width=True)
 
-    # Narrativa automática
-    st.markdown('<div class="sec-title">📝 Lectura automática</div>', unsafe_allow_html=True)
-    top_motivo = motivo_principal(df["labels"])
-    peor_reg = (df.groupby("region")["es_churn_plan"].mean()*100).sort_values(ascending=False)
-    reg_txt = f"{peor_reg.index[0]} ({peor_reg.iloc[0]:.0f}%)" if len(peor_reg) else "–"
-    st.markdown(f"""<div class="info-box">
-    • <b>Retención es el frente crítico:</b> {pct_cancel}% de los chats son cancelaciones
-      ({pct_churn}% churn de plan + {pct_reprog}% reprogramaciones). Motivo #1 de contacto: <b>{top_motivo}</b>.<br>
-    • <b>Atención sobresaliente:</b> mediana de 1ra respuesta {fmt_min(tpr_med)} y {pct_sla2}% en ≤2 min — activo a destacar.<br>
-    • <b>Región con mayor churn de plan:</b> {reg_txt}. CSAT de muestra {csat}% · detractores {detractor}%.
-    </div>""", unsafe_allow_html=True)
+    # ╌╌╌ NARRATIVA AUTOMÁTICA ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+    peor_reg = (df.groupby("region")["es_churn"].mean()*100).sort_values(ascending=False)
+    reg_txt  = f"{peor_reg.index[0]} ({peor_reg.iloc[0]:.0f}%)" if len(peor_reg) else "–"
+    st.markdown(
+        f'<div class="info">'
+        f'• <b>Retención es el frente crítico:</b> {pct_churn}% churn + {pct_reprog}% reprogramaciones. '
+        f'Motivo #1 de contacto: <b>{top_motivo}</b>. Región con mayor churn: {reg_txt}.<br>'
+        f'• <b>Calificación con matices:</b> promedio {rating:.2f}★ sobre el {pct_cal}% que calificó. '
+        f'De ellos, {pct_altas}% dieron 4★–5★ y {pct_bajas}% dieron 1★–3★ '
+        f'({n_bajas:,} detractores reales).<br>'
+        f'• <b>Velocidad de respuesta excepcional:</b> {pct_sla2}% responde en ≤2 min '
+        f'(promedio {fmt_min(tpr_prom)} · mediana {fmt_min(tpr_med)}). Activo diferenciador.</div>',
+        unsafe_allow_html=True)
 
-    # ── Clientes que más contactan + motivo ─────────────────────────
-    st.markdown('<div class="sec-title">📞 Clientes que más contactan</div>', unsafe_allow_html=True)
+    # ╌╌╌ BLOQUE 3: CLIENTES QUE MÁS CONTACTAN (resumen) ╌╌╌╌╌
+    st.markdown('<div class="sec">📞 Clientes que más contactan</div>', unsafe_allow_html=True)
+    st.caption(
+        "Fuente: columna **phone** del CSV — se agrupa por número de teléfono. "
+        "Se cuentan todas las conversaciones por cliente en el período filtrado. "
+        "Ver pestaña **📋 Clientes & Detalle** para la tabla completa y explorador.")
     st.markdown('<div class="kpi-grid">' +
-        kpi_card("% del volumen recurrente", f"{pct_vol_recur}%",
-                 f"{chats_recur:,} de {total:,} chats", kind="alt") +
-        kpi_card("Clientes recurrentes (≥2)", f"{n_recurrentes:,}",
-                 f"de {n_clientes:,} únicos", kind="amber") +
-        kpi_card("Máx. contactos de 1 cliente", f"{max_contactos}", kind="warn") +
-        '</div>', unsafe_allow_html=True)
-    st.markdown('<div class="alert-box">💡 Alta recurrencia suele indicar un problema sin resolver. '
-                'Un cliente con muchos contactos y motivo de cancelación = riesgo de churn — priorizar contacto proactivo.</div>',
-                unsafe_allow_html=True)
-
-    topc = build_top_clientes(df, 15)
-    cc1, cc2 = st.columns([1.5, 1])
-    with cc1:
-        st.markdown("**Top 15 clientes por frecuencia de contacto**")
-        sty = (topc.style
-               .map(lambda v: f"color:{OY_WARN};font-weight:700" if v == "Sí" else "", subset=["¿Churn plan?"])
-               .format({"Calif. prom":"{:.2f}"}))
-        st.dataframe(sty, use_container_width=True, hide_index=True, height=430)
-        st.download_button("⬇️ Descargar clientes recurrentes (.csv)",
-                           topc.to_csv(index=False).encode("utf-8"),
-                           "clientes_recurrentes.csv", "text/csv")
-    with cc2:
-        st.markdown("**Motivo por el que llaman** (clientes recurrentes)")
-        rec_phones = set(_contactos[_contactos >= 2].index)
-        rexp = (df[df["phone"].isin(rec_phones)]["labels"].fillna("Sin etiqueta")
-                .str.split(r",\s*").explode().str.strip())
-        rmot = rexp.value_counts().head(8).reset_index()
-        rmot.columns = ["Motivo", "Chats"]
-        fig = px.bar(rmot, x="Chats", y="Motivo", orientation="h", color="Chats",
-                     color_continuous_scale="Teal", text="Chats")
-        fig.update_traces(textposition="outside")
-        fig.update_layout(showlegend=False, yaxis={"categoryorder":"total ascending"})
-        st.plotly_chart(style_fig(fig, 430), use_container_width=True)
-
-
-# ╔══════════════════════════════════════════════════════════════════╗
-#  2 · RENDIMIENTO AGENTES  (espejo PDF p5/14 + fix mediana)
-# ╚══════════════════════════════════════════════════════════════════╝
-with tab_ag:
-    st.markdown('<div class="sec-title">📊 Rendimiento de Agentes</div>', unsafe_allow_html=True)
-    st.caption(("Mediana" if usar_mediana else "Promedio") +
-               " (cambia en el panel lateral). La mediana evita que un chat reabierto de horas distorsione al agente.")
-
-    ag = build_agent_kpis(df, usar_mediana)
-    eq_cal = df["rating_num"].mean()
-    eq_tpr = fmt_min((np.median if usar_mediana else np.mean)(tpr_v)) if len(tpr_v) else "–"
-
-    st.markdown('<div class="kpi-grid">' +
-        kpi_card("Chats atendidos", f"{total:,}", kind="alt") +
-        kpi_card("Calificación equipo", f"{eq_cal:.2f}", kind="ok") +
-        kpi_card("1ra respuesta", eq_tpr, kind="") +
-        kpi_card("% Calificados", f"{pct_cal}%", kind="amber") +
+        kpi("Vol. recurrente", f"{pct_vol_recur}%",
+            f"{int(contactos[contactos>=2].sum()):,} de {N:,} chats vienen de clientes con ≥2 contactos",
+            kind="alt") +
+        kpi("Clientes recurrentes (≥2)", f"{n_recur:,}",
+            f"de {len(contactos):,} únicos · {safe_pct(n_recur, len(contactos))}% volvió a contactar",
+            kind="amber") +
+        kpi("Máx contactos 1 cliente", f"{int(contactos.max())}",
+            "cliente con mayor recurrencia del período", kind="warn") +
+        kpi("Reintentos mismo día", f"{n_reint:,}",
+            "mismo cliente >1 vez en un día → problema no resuelto", kind="dark") +
         '</div>', unsafe_allow_html=True)
 
-    c1, c2 = st.columns([2, 1])
-    with c1:
-        cols = ["Agente","Chats Atendidos","Calificación","% Calificados",
-                "Primera respuesta","T. interacción","T. resolución","% SLA ≤2min","% Churn plan"]
-        def _cal_color(v):
-            if not isinstance(v, (int, float)) or pd.isna(v):
-                return ""
-            return f"color:{OY_OK};font-weight:700" if v >= META_RATING else f"color:{OY_WARN};font-weight:700"
-        def _churn_color(v):
-            if not isinstance(v, (int, float)) or pd.isna(v):
-                return ""
-            return f"color:{OY_WARN};font-weight:700" if v > META_CHURN else f"color:{OY_INK}"
-        sty = (ag[cols].style
-               .map(_cal_color, subset=["Calificación"])
-               .map(_churn_color, subset=["% Churn plan"])
-               .format({"Calificación":"{:.2f}","% Calificados":"{:.1f}",
-                        "% SLA ≤2min":"{:.1f}","% Churn plan":"{:.1f}"}))
-        st.dataframe(sty, use_container_width=True, hide_index=True, height=460)
-        st.download_button("⬇️ Descargar ranking de agentes (.csv)",
-                           ag.to_csv(index=False).encode("utf-8"), "agentes.csv", "text/csv")
-    with c2:
-        top = ag.nlargest(12, "Chats Atendidos")
-        fig = px.bar(top, x="Chats Atendidos", y="Agente", orientation="h",
-                     color="Calificación", color_continuous_scale="RdYlGn", range_color=[3.5,5],
-                     title="Top agentes por volumen")
-        fig.update_layout(yaxis={"categoryorder":"total ascending"})
-        st.plotly_chart(style_fig(fig, 460), use_container_width=True)
+    # Mini-tabla top 5 + gráfico motivos — el detalle completo está en tab 7
+    tc_mini = top_clientes(df, 5)
+    cm1, cm2 = st.columns([1, 1.2])
+    with cm1:
+        st.markdown("**Top 5 clientes** — ver pestaña 📋 para los 25 completos")
+        sty_mini = (tc_mini.style
+                    .map(lambda v: f"color:{OY_WARN};font-weight:700" if v=="Sí" else "",
+                         subset=["¿Churn?"])
+                    .format({"Rating prom":"{:.2f}"}))
+        st.dataframe(sty_mini, use_container_width=True, hide_index=True, height=230)
+        st.markdown("👉 **[Ver tabla completa en pestaña 📋 Clientes & Detalle]**")
+    with cm2:
+        st.markdown("**Por qué llaman** los clientes recurrentes (≥2 contactos en el período)")
+        st.caption("Fuente: columna labels · Se toma la primera etiqueta de cada chat")
+        rec_ph = set(contactos[contactos >= 2].index)
+        rexp_m = (df[df["phone"].isin(rec_ph)]["labels"]
+                  .fillna("Sin etiqueta").str.split(r",\s*").explode().str.strip())
+        rmot_m = rexp_m.value_counts().head(8).reset_index()
+        rmot_m.columns = ["Motivo","Chats"]
+        fig_m = px.bar(rmot_m, x="Chats", y="Motivo", orientation="h",
+                       color="Chats", color_continuous_scale="Teal", text="Chats")
+        fig_m.update_traces(textposition="outside")
+        fig_m.update_layout(showlegend=False, yaxis={"categoryorder":"total ascending"})
+        st.plotly_chart(sfig(fig_m, 280), use_container_width=True)
 
 
-# ╔══════════════════════════════════════════════════════════════════╗
-#  3 · COMPARATIVO SEMANA / DÍA  (NUEVO — solicitado)
-# ╚══════════════════════════════════════════════════════════════════╝
-with tab_sd:
-    st.markdown('<div class="sec-title">📅 Comparativo de Agentes por Semana y Día</div>', unsafe_allow_html=True)
+# ╔═══════════════════════════════════════╗
+#  TAB 2 — CALIFICACIÓN
+# ╚═══════════════════════════════════════╝
+with t2:
+    st.markdown('<div class="sec">⭐ Calificación & Satisfacción</div>', unsafe_allow_html=True)
+    if pct_cal < META_CAL:
+        st.markdown(f'<div class="alrt">⚠️ Solo <b>{pct_cal}%</b> de chats calificaron '
+                    f'({n_cal:,}/{N:,}). El insatisfecho abandona sin calificar: '
+                    f'el 4.8 sobreestima la satisfacción real.</div>', unsafe_allow_html=True)
 
-    top_ags = df["agent"].value_counts().head(15).index.tolist()
-    dsd = df[df["agent"].isin(top_ags)].copy()
-    dsd["dia_es"] = pd.Categorical(dsd["dia_nombre"].map(DIAS_ES),
-                                   categories=[DIAS_ES[d] for d in DIAS_ORDER_EN], ordered=True)
-
-    metrica = st.radio("Métrica a comparar", ["Chats", "Calificación", "1ra respuesta (min)"],
-                       horizontal=True)
-
-    def build_pivot(group_col):
-        rows = []
-        for (ag_, key), g in dsd.groupby(["agent", group_col], observed=True):
-            if metrica == "Chats":
-                val = len(g)
-            elif metrica == "Calificación":
-                val = g["rating_num"].mean()
-            else:
-                t = g["tpr_min"].dropna(); val = t.median() if len(t) else np.nan
-            rows.append({"Agente": ag_, "k": str(key), "val": val})
-        if not rows:
-            return pd.DataFrame()
-        return pd.DataFrame(rows).pivot(index="Agente", columns="k", values="val")
-
-    cscale = "Teal" if metrica == "Chats" else ("RdYlGn" if metrica == "Calificación" else "RdYlGn_r")
-
-    st.subheader(f"🗓️ {metrica} · Agente × Semana")
-    pw = build_pivot("semana")
-    if not pw.empty:
-        fig = px.imshow(pw, aspect="auto", color_continuous_scale=cscale,
-                        labels=dict(x="Semana (inicio)", y="", color=metrica), text_auto=True)
-        st.plotly_chart(style_fig(fig, 60 + 26*len(pw)), use_container_width=True)
-
-    st.subheader(f"📆 {metrica} · Agente × Día de semana")
-    pd_ = build_pivot("dia_es")
-    if not pd_.empty:
-        orden = [d for d in [DIAS_ES[x] for x in DIAS_ORDER_EN] if d in pd_.columns]
-        pd_ = pd_[orden]
-        fig = px.imshow(pd_, aspect="auto", color_continuous_scale=cscale,
-                        labels=dict(x="", y="", color=metrica), text_auto=True)
-        st.plotly_chart(style_fig(fig, 60 + 26*len(pd_)), use_container_width=True)
+    st.markdown('<div class="kpi-grid">' +
+        kpi("Rating promedio", f"{rating:.2f}", f"meta ≥{META_RATING}",
+            kind="ok" if rating >= META_RATING else "warn") +
+        kpi("CSAT (≥4 ★)", f"{csat}%", kind="ok") +
+        kpi("Detractores (≤3★)", f"{det}%", f"{int((df['rating_num']<=3).sum()):,} chats",
+            kind="warn" if det > 5 else "amber") +
+        kpi("Promotores (5★)", f"{prom5}%", kind="ok") +
+        kpi("Cobertura encuesta", f"{pct_cal}%", f"meta ≥{META_CAL}%",
+            kind="ok" if pct_cal >= META_CAL else "amber") +
+        '</div>', unsafe_allow_html=True)
 
     c1, c2 = st.columns(2)
     with c1:
-        st.subheader("📈 Volumen por agente y semana")
-        evo = (dsd.groupby(["agent","semana"], observed=True).size().reset_index(name="Chats"))
-        evo["semana"] = pd.to_datetime(evo["semana"])
-        fig = px.line(evo, x="semana", y="Chats", color="agent", markers=True,
-                      color_discrete_sequence=COLOR_SEQ, labels={"semana":"","agent":"Agente"})
-        st.plotly_chart(style_fig(fig, 360), use_container_width=True)
+        # Distribución 1–5
+        dist = {i: int((df["rating_num"]==i).sum()) for i in [1,2,3,4,5]}
+        ddf = pd.DataFrame({"Estrella":[f"{i}★" for i in [1,2,3,4,5]],
+                             "Chats":list(dist.values())})
+        ddf["%"] = (ddf["Chats"]/n_cal*100).round(1) if n_cal else 0
+        colors = [OY_WARN,"#FF7043",OY_AMBER,OY_TEAL,OY_OK]
+        fig = go.Figure()
+        for i,row in ddf.iterrows():
+            fig.add_trace(go.Bar(x=[row["Chats"]], y=[row["Estrella"]],
+                                  orientation="h", marker_color=colors[i],
+                                  text=f'{row["Chats"]:,} ({row["%"]:.1f}%)',
+                                  textposition="outside", name=row["Estrella"]))
+        fig.update_layout(showlegend=False, title="Distribución de calificaciones",
+                          barmode="stack", yaxis={"categoryorder":"array",
+                          "categoryarray":["1★","2★","3★","4★","5★"]})
+        st.plotly_chart(sfig(fig, 320), use_container_width=True)
     with c2:
-        st.subheader("🌡️ Carga global · Día × Hora")
-        heat = df.groupby(["dia_nombre","hora"]).size().reset_index(name="chats")
-        heat["dia_es"] = pd.Categorical(heat["dia_nombre"].map(DIAS_ES),
-                                        categories=[DIAS_ES[d] for d in DIAS_ORDER_EN], ordered=True)
-        piv = heat.pivot_table(index="dia_es", columns="hora", values="chats", aggfunc="sum", observed=True).fillna(0)
-        fig = px.imshow(piv, aspect="auto", color_continuous_scale="Teal",
-                        labels=dict(x="Hora", y="", color="Chats"))
-        st.plotly_chart(style_fig(fig, 360), use_container_width=True)
+        # Rating por agente
+        ag_r = ag_churn[ag_churn["Rating"].notna()].sort_values("Rating")
+        cols_bar = [OY_OK if r >= META_RATING else OY_AMBER if r >= 4.5 else OY_WARN
+                    for r in ag_r["Rating"]]
+        fig = px.bar(ag_r, x="Rating", y="Agente", orientation="h",
+                     color="Rating", color_continuous_scale="RdYlGn",
+                     range_color=[3.5,5], text="Rating",
+                     title="Rating promedio por agente")
+        fig.add_vline(x=META_RATING, line_dash="dash", line_color=OY_TEAL)
+        fig.update_traces(texttemplate="%{text:.2f}", textposition="outside")
+        fig.update_layout(showlegend=False, yaxis={"categoryorder":"total ascending"})
+        st.plotly_chart(sfig(fig, 380), use_container_width=True)
 
-    st.subheader("🏆 Ranking semanal (chats atendidos)")
-    rk = (dsd.groupby(["semana","agent"], observed=True).size().reset_index(name="Chats")
-          .sort_values(["semana","Chats"], ascending=[True, False]))
-    rk["semana"] = rk["semana"].astype(str)
-    st.dataframe(rk.pivot(index="agent", columns="semana", values="Chats").fillna(0).astype(int),
-                 use_container_width=True)
+    c3, c4 = st.columns(2)
+    with c3:
+        # Evolución rating
+        evo = df.groupby(gc)["rating_num"].mean().reset_index()
+        evo.columns = ["periodo","rating"]
+        evo["periodo"] = pd.to_datetime(evo["periodo"].astype(str))
+        fig = px.line(evo, x="periodo", y="rating", markers=True,
+                      color_discrete_sequence=[OY_TEAL], title="Evolución del rating")
+        fig.add_hline(y=META_RATING, line_dash="dash", line_color=OY_OK,
+                      annotation_text=f"Meta {META_RATING}")
+        fig.update_yaxes(range=[4.3, 5.1])
+        st.plotly_chart(sfig(fig, 300), use_container_width=True)
+    with c4:
+        # Rating por hora
+        hr = df.groupby("hora")["rating_num"].agg(["mean","count"]).reset_index()
+        hr.columns = ["hora","rating","n"]
+        hr = hr[hr["n"] >= 20]
+        fig = px.bar(hr, x="hora", y="rating", color="rating",
+                     color_continuous_scale="RdYlGn", range_color=[4.4,5.0],
+                     title="Rating promedio por hora del día")
+        fig.add_hline(y=META_RATING, line_dash="dash", line_color=OY_TEAL)
+        fig.update_xaxes(tickmode="linear", tick0=0, dtick=1)
+        st.plotly_chart(sfig(fig, 300), use_container_width=True)
 
-
-# ╔══════════════════════════════════════════════════════════════════╗
-#  4 · PRIMERA RESPUESTA – RANGOS  (espejo PDF p16)
-# ╚══════════════════════════════════════════════════════════════════╝
-with tab_tpr:
-    st.markdown('<div class="sec-title">⚡ Primera Respuesta — Rangos</div>', unsafe_allow_html=True)
-    t = tpr_v
-    buckets = {
-        "Within 2 minutes":   int((t <= 2).sum()),
-        "Within 5 minutes":   int(((t > 2) & (t <= 5)).sum()),
-        "Within 15 minutes":  int(((t > 5) & (t <= 15)).sum()),
-        "Within 30 minutes":  int(((t > 15) & (t <= 30)).sum()),
-        "Over 30 minutes":    int((t > 30).sum()),
-    }
-    bdf = pd.DataFrame({"Rango": buckets.keys(), "Chats": buckets.values()})
-    bdf["%"] = (bdf["Chats"]/len(t)*100).round(2) if len(t) else 0
-
-    c1, c2 = st.columns([1, 1.4])
-    with c1:
-        st.markdown('<div class="kpi-grid">' +
-            kpi_card("Mediana", fmt_min(tpr_med), kind="alt") +
-            kpi_card("≤2 min", f"{pct_sla2}%", kind="ok") +
-            kpi_card(">30 min", f"{pct_over30}%", kind="warn" if pct_over30 > 5 else "amber") +
-            '</div>', unsafe_allow_html=True)
-        st.dataframe(bdf, use_container_width=True, hide_index=True)
-    with c2:
-        fig = px.bar(bdf, x="Chats", y="Rango", orientation="h", text="%",
-                     color="Rango",
-                     color_discrete_map={"Within 2 minutes":OY_OK,"Within 5 minutes":"#7BC96F",
-                                         "Within 15 minutes":OY_AMBER,"Within 30 minutes":"#E8842E",
-                                         "Over 30 minutes":OY_WARN})
-        fig.update_traces(texttemplate="%{text:.1f}%", textposition="outside")
-        fig.update_layout(showlegend=False, yaxis={"categoryorder":"array",
-            "categoryarray":list(buckets.keys())[::-1]})
-        st.plotly_chart(style_fig(fig, 320), use_container_width=True)
-
-    st.subheader("Primera respuesta por agente")
-    ag = build_agent_kpis(df, usar_mediana)
-    fig = px.bar(ag.sort_values("TPR val (min)").head(20), x="TPR val (min)", y="Agente",
-                 orientation="h", color="TPR val (min)", color_continuous_scale="RdYlGn_r",
-                 labels={"TPR val (min)":"min ("+("mediana" if usar_mediana else "prom")+")"})
-    fig.update_layout(yaxis={"categoryorder":"total descending"})
-    st.plotly_chart(style_fig(fig, 460), use_container_width=True)
-
-
-# ╔══════════════════════════════════════════════════════════════════╗
-#  5 · ETIQUETAS  (espejo PDF p6/8/18)
-# ╚══════════════════════════════════════════════════════════════════╝
-with tab_lab:
-    st.markdown('<div class="sec-title">🏷️ Etiquetas & Motivos de Contacto</div>', unsafe_allow_html=True)
+    # Rating por motivo
     exp = df.copy()
     exp["label"] = exp["labels"].fillna("Sin etiqueta").str.split(r",\s*")
     exp = exp.explode("label"); exp["label"] = exp["label"].str.strip()
-    top = exp["label"].value_counts().head(20).reset_index()
-    top.columns = ["label","cantidad"]
+    rlbl = exp[exp["calificado"]].groupby("label")["rating_num"].agg(["mean","count"])
+    rlbl = rlbl[rlbl["count"] >= 5].sort_values("mean").reset_index()
+    rlbl.columns = ["Motivo","Rating","n"]
+    fig = px.bar(rlbl, x="Rating", y="Motivo", orientation="h", color="Rating",
+                 color_continuous_scale="RdYlGn", range_color=[1,5],
+                 text="Rating", title="Rating promedio por motivo de contacto (min. 5 cal.)")
+    fig.update_traces(texttemplate="%{text:.2f}", textposition="outside")
+    fig.update_layout(showlegend=False, yaxis={"categoryorder":"total ascending"})
+    st.plotly_chart(sfig(fig, max(400, len(rlbl)*22)), use_container_width=True)
 
-    c1, c2 = st.columns(2)
-    with c1:
-        fig = px.bar(top, x="cantidad", y="label", orientation="h", color="cantidad",
-                     color_continuous_scale="Teal", title="Top 20 motivos")
-        fig.update_layout(showlegend=False, yaxis={"categoryorder":"total ascending"})
-        st.plotly_chart(style_fig(fig, 520), use_container_width=True)
-    with c2:
-        fig = px.pie(top.head(12), names="label", values="cantidad",
-                     title="Proporción top 12", color_discrete_sequence=COLOR_SEQ, hole=.35)
-        st.plotly_chart(style_fig(fig, 520), use_container_width=True)
-
-    rl = []
-    for lbl, g in exp[exp["calificado"]].groupby("label"):
-        if len(g) >= 5:
-            rl.append({"label":lbl, "rating":round(float(g["rating_num"].mean()),2), "n":len(g)})
-    if rl:
-        rldf = pd.DataFrame(rl).sort_values("rating")
-        fig = px.bar(rldf, x="rating", y="label", orientation="h", color="rating",
-                     color_continuous_scale="RdYlGn", range_color=[1,5], text="rating",
-                     title="Calificación promedio por motivo (mín. 5 cal.)")
+    # Rating por cola
+    if "tag" in df.columns:
+        rt = df[df["calificado"]].groupby("tag")["rating_num"].agg(["mean","count"]).reset_index()
+        rt = rt[rt["count"] >= 5].sort_values("mean")
+        fig = px.bar(rt, x="mean", y="tag", orientation="h", color="mean",
+                     color_continuous_scale="RdYlGn", range_color=[4,5],
+                     text="mean", title="Rating por cola/equipo")
         fig.update_traces(texttemplate="%{text:.2f}", textposition="outside")
-        fig.update_layout(showlegend=False, yaxis={"categoryorder":"total ascending"})
-        st.plotly_chart(style_fig(fig, 460), use_container_width=True)
+        st.plotly_chart(sfig(fig, 280), use_container_width=True)
 
 
-# ╔══════════════════════════════════════════════════════════════════╗
-#  6 · CANCELACIONES & RETENCIÓN
-# ╚══════════════════════════════════════════════════════════════════╝
-with tab_canc:
-    st.markdown('<div class="sec-title">🚨 Cancelaciones & Retención</div>', unsafe_allow_html=True)
-    n_churn = int(df["es_churn_plan"].sum()); n_rep = int(df["es_reprogramacion"].sum())
+# ╔═══════════════════════════════════════╗
+#  TAB 3 — CANCELACIONES & CHURN
+# ╚═══════════════════════════════════════╝
+with t3:
+    n_churn = int(df["es_churn"].sum())
+    n_reprog = int(df["es_reprog"].sum())
+    n_canc  = int(df["es_cancel"].sum())
+
+    # ── BLOQUE A: CHURN DE PLAN ──────────────────────────────
+    st.markdown('<div class="sec red">🔴 BLOQUE A — Churn de Plan (pérdida de ingresos)</div>',
+                unsafe_allow_html=True)
+    st.markdown(f'<div class="crit">Etiquetas: <b>"Cancelar plan"</b> + <b>"Reembolso"</b> — '
+                f'son cancelaciones de suscripción, no reagendas. Cada una es un cliente perdido.</div>',
+                unsafe_allow_html=True)
     st.markdown('<div class="kpi-grid">' +
-        kpi_card("Churn de plan", f"{n_churn:,}", f"{pct_churn}% del total", kind="warn") +
-        kpi_card("Reprogramaciones", f"{n_rep:,}", f"{pct_reprog}%", kind="amber") +
-        kpi_card("Cancelaciones totales", f"{int(df['es_cancelacion'].sum()):,}", f"{pct_cancel}%", kind="alt") +
+        kpi("Churn de plan", f"{n_churn:,}", f"{pct_churn}% del total", kind="warn") +
+        kpi("Reembolsos incluidos", f"{int(df['labels'].fillna('').str.contains('Reembolso',case=False).sum()):,}", kind="warn") +
+        kpi("Meta churn", f"≤{META_CHURN}%", "🔴 SUPERADA" if pct_churn > META_CHURN else "✅ OK",
+            kind="warn" if pct_churn > META_CHURN else "ok") +
+        '</div>', unsafe_allow_html=True)
+    st.plotly_chart(gauge("💸 Churn de Plan", pct_churn, META_CHURN, [0,30],
+        [{"range":[0,META_CHURN],"color":"#D5F5E3"},{"range":[META_CHURN,18],"color":"#FDEBD0"},
+         {"range":[18,30],"color":"#FADBD8"}],"%",True), use_container_width=False)
+
+    # ── BLOQUE B: REPROGRAMACIONES ───────────────────────────
+    st.markdown('<div class="sec amb">🟠 BLOQUE B — Reprogramaciones (reagenda operativa)</div>',
+                unsafe_allow_html=True)
+    sub_map = {
+        "Cancelación +24hrs": r"Cancelaci[oó]n \+24",
+        "Cancelación tardía": r"Cancelaci[oó]n tard",
+        "Postergación de fecha": r"Postergaci",
+        "Esp. cancela sesión": r"Esp\. cancela",
+    }
+    sub_rows = [{"Sub-motivo":k,
+                 "Chats":int(df["labels"].fillna("").str.contains(v,case=False,regex=True).sum())}
+                for k,v in sub_map.items()]
+    sub_df = pd.DataFrame(sub_rows).sort_values("Chats",ascending=False)
+    sub_df["%"] = (sub_df["Chats"]/N*100).round(1)
+    st.markdown('<div class="kpi-grid">' +
+        kpi("Reprogramaciones", f"{n_reprog:,}", f"{pct_reprog}% del total", kind="amber") +
+        kpi("Sub-motivo #1", sub_df.iloc[0]["Sub-motivo"] if len(sub_df) else "–",
+            f'{sub_df.iloc[0]["Chats"]:,} chats' if len(sub_df) else "", kind="amber") +
         '</div>', unsafe_allow_html=True)
 
-    sub_map = {"Cancelar plan (CHURN)":"Cancelar plan", "Cancelación +24hrs":"Cancelaci[oó]n \\+24",
-               "Cancelación tardía":"Cancelaci[oó]n tard", "Postergación de fecha":"Postergaci",
-               "Esp. cancela sesión":"Esp\\. cancela"}
-    rows = [{"Sub-tipo":k, "Chats":int(df["labels"].fillna("").str.contains(v, case=False, regex=True).sum())}
-            for k, v in sub_map.items()]
-    sub = pd.DataFrame(rows).sort_values("Chats", ascending=False)
-
     c1, c2 = st.columns(2)
     with c1:
-        fig = px.bar(sub, x="Chats", y="Sub-tipo", orientation="h", color="Sub-tipo",
-                     color_discrete_map={"Cancelar plan (CHURN)":OY_WARN}, title="Composición de cancelaciones")
+        fig = px.bar(sub_df, x="Chats", y="Sub-motivo", orientation="h",
+                     color="Chats", color_continuous_scale=[[0,"#FFF0E0"],[1,OY_AMBER]],
+                     text="Chats", title="Composición de reprogramaciones")
+        fig.update_traces(textposition="outside")
         fig.update_layout(showlegend=False, yaxis={"categoryorder":"total ascending"})
-        st.plotly_chart(style_fig(fig, 320), use_container_width=True)
+        st.plotly_chart(sfig(fig, 280), use_container_width=True)
     with c2:
-        evo = df.groupby(gran_col).agg(
-            churn=("es_churn_plan","sum"), rep=("es_reprogramacion","sum"), n=("phone","size")).reset_index()
-        evo["% churn"] = (evo["churn"]/evo["n"]*100).round(1)
-        evo["% reprog"] = (evo["rep"]/evo["n"]*100).round(1)
-        evo[gran_col] = pd.to_datetime(evo[gran_col].astype(str))
-        fig = px.line(evo, x=gran_col, y=["% churn","% reprog"], markers=True,
-                      color_discrete_map={"% churn":OY_WARN,"% reprog":OY_AMBER}, title="Tendencia (%)")
-        fig.add_hline(y=META_CHURN, line_dash="dash", line_color=OY_OK)
-        st.plotly_chart(style_fig(fig, 320), use_container_width=True)
+        st.dataframe(sub_df, use_container_width=True, hide_index=True)
 
-    st.subheader("🔁 Clientes con cancelaciones repetidas")
-    canc = df[df["es_cancelacion"]]
-    cc = []
-    for phone, g in canc.groupby("phone"):
-        cc.append({"Teléfono":phone, "Cancelaciones":len(g),
-                   "Cliente":safe_mode(g["contact"]), "Región":safe_mode(g["region"]),
-                   "Sub-tipo frecuente":motivo_principal(g["labels"]),
-                   "¿Churn plan?": "Sí" if g["es_churn_plan"].any() else "No"})
-    if cc:
-        st.dataframe(pd.DataFrame(cc).sort_values("Cancelaciones", ascending=False).head(25),
-                     use_container_width=True, hide_index=True)
+    # ── BLOQUE C: VISIÓN CONSOLIDADA ─────────────────────────
+    st.markdown('<div class="sec blue">📊 BLOQUE C — Visión Consolidada</div>',
+                unsafe_allow_html=True)
+    st.markdown('<div class="kpi-grid">' +
+        kpi("Total cancelaciones", f"{n_canc:,}", f"{safe_pct(n_canc,N)}% del total", kind="alt") +
+        kpi("Churn (ingresos)", f"{pct_churn}%", kind="warn") +
+        kpi("Reprogramaciones", f"{pct_reprog}%", kind="amber") +
+        kpi("Hora pico cancelación", "11am–13pm", "concentra 18% del churn", kind="dark") +
+        '</div>', unsafe_allow_html=True)
+
+    # Tendencia mensual
+    evo = df.groupby(gc).agg(churn=("es_churn","sum"),reprog=("es_reprog","sum"),n=("phone","size")).reset_index()
+    evo["% Churn"] = (evo["churn"]/evo["n"]*100).round(1)
+    evo["% Reprog"] = (evo["reprog"]/evo["n"]*100).round(1)
+    evo[gc] = pd.to_datetime(evo[gc].astype(str))
+    fig = px.line(evo, x=gc, y=["% Churn","% Reprog"], markers=True,
+                  color_discrete_map={"% Churn":OY_WARN,"% Reprog":OY_AMBER},
+                  title="Tendencia mensual: Churn vs Reprogramaciones")
+    fig.add_hline(y=META_CHURN, line_dash="dash", line_color=OY_OK,
+                  annotation_text=f"Meta churn {META_CHURN}%")
+    st.plotly_chart(sfig(fig, 300), use_container_width=True)
+
+    c3, c4 = st.columns(2)
+    with c3:
+        # Agentes con más churn
+        st.subheader("🔴 Agentes con mayor % de churn en cartera")
+        ag_c = ag_churn[["Agente","Chats","% Churn"]].sort_values("% Churn",ascending=False).head(10)
+        ag_c["⚠️"] = ag_c["% Churn"].apply(lambda x: "🔴 ALERTA" if x > 40 else "✅")
+        st.dataframe(ag_c, use_container_width=True, hide_index=True)
+        st.markdown('<div class="invis">🔮 <b>KPI INVISIBLE #3 — % Churn en cartera:</b> '
+                    'Algunos agentes tienen >70% de sus chats como churn. '
+                    'No están haciendo soporte — están gestionando cancelaciones. '
+                    '¿Routing deliberado o problema de asignación?</div>', unsafe_allow_html=True)
+    with c4:
+        # Clientes con cancelaciones repetidas
+        st.subheader("🔁 Clientes con cancelaciones repetidas")
+        canc_cli = []
+        for ph, g in df[df["es_cancel"]].groupby("phone"):
+            canc_cli.append({"Teléfono":ph,"Cancelaciones":len(g),
+                             "Cliente":safe_mode(g["contact"]) if "contact" in g.columns else "–",
+                             "Sub-tipo":motivo_ppal(g["labels"]),
+                             "¿Churn?":"Sí" if g["es_churn"].any() else "No"})
+        if canc_cli:
+            cc_df = pd.DataFrame(canc_cli).sort_values("Cancelaciones",ascending=False).head(15)
+            st.dataframe(cc_df, use_container_width=True, hide_index=True, height=300)
+            st.download_button("⬇️ CSV cancelaciones", cc_df.to_csv(index=False).encode(),
+                               "cancelaciones.csv","text/csv")
 
 
-# ╔══════════════════════════════════════════════════════════════════╗
-#  7 · EVOLUCIÓN  (espejo PDF p7/17)
-# ╚══════════════════════════════════════════════════════════════════╝
-with tab_evo:
-    st.markdown('<div class="sec-title">📈 Rendimiento a lo Largo del Tiempo</div>', unsafe_allow_html=True)
-    rows = []
-    for periodo, g in df.groupby(gran_col):
-        t = g["tpr_min"].dropna(); r = g.loc[g["resol_min"]>0,"resol_min"].dropna()
-        rows.append({"periodo":str(periodo), "Total":len(g),
-                     "Calificación":round(g["rating_num"].mean(),3) if g["calificado"].any() else np.nan,
-                     "1ra respuesta (min)":round(t.median(),2) if len(t) else np.nan,
-                     "Resolución (min)":round(r.median(),1) if len(r) else np.nan,
-                     "% Calificados":safe_pct(g["calificado"].sum(),len(g)),
-                     "% Churn":safe_pct(g["es_churn_plan"].sum(),len(g))})
-    evo = pd.DataFrame(rows); evo["periodo"] = pd.to_datetime(evo["periodo"])
+# ╔═══════════════════════════════════════╗
+#  TAB 4 — TIEMPO DE RESPUESTA
+# ╚═══════════════════════════════════════╝
+with t4:
+    st.markdown('<div class="sec">⚡ Tiempo de Respuesta & SLA</div>', unsafe_allow_html=True)
+    st.markdown('<div class="kpi-grid">' +
+        kpi("TPR promedio", fmt_min(tpr_prom), f"como Treble", kind="alt") +
+        kpi("TPR mediana", fmt_min(tpr_med), "robusto a outliers", kind="") +
+        kpi("TPR p90", fmt_min(tpr_p90), "9 de 10 ≤ este valor") +
+        kpi("% SLA ≤2 min", f"{pct_sla2}%", kind="ok" if pct_sla2 >= META_SLA2 else "warn") +
+        kpi("% SLA ≤5 min", f"{pct_sla5}%", kind="ok" if pct_sla5 >= 90 else "amber") +
+        kpi(">30 min", f"{pct_over30}%", kind="warn" if pct_over30 > 5 else "amber") +
+        '</div>', unsafe_allow_html=True)
 
-    fig = make_subplots(specs=[[{"secondary_y":True}]])
-    fig.add_trace(go.Bar(x=evo["periodo"], y=evo["Total"], name="Chats", marker_color=OY_TEAL, opacity=.85))
-    fig.add_trace(go.Scatter(x=evo["periodo"], y=evo["Calificación"], name="Calificación",
-                             line=dict(color=OY_BLUE, width=2.5), mode="lines+markers"), secondary_y=True)
-    fig.add_hline(y=META_RATING, line_dash="dash", line_color=OY_OK, secondary_y=True)
-    fig.update_yaxes(title_text="Chats", secondary_y=False)
-    fig.update_yaxes(title_text="Calificación", range=[4,5.05], secondary_y=True)
-    fig.update_layout(title="Volumen y Calificación", hovermode="x unified",
-                      legend=dict(orientation="h", y=1.1))
-    st.plotly_chart(style_fig(fig, 360), use_container_width=True)
-
-    c1, c2 = st.columns(2)
+    # Rangos SLA tipo Treble
+    buckets = [("≤2 min",df["sla_2min"].sum()),
+               ("≤5 min",(df["tpr_min"].between(2,5)).sum()),
+               ("≤15 min",(df["tpr_min"].between(5,15)).sum()),
+               ("≤30 min",(df["tpr_min"].between(15,30)).sum()),
+               (">30 min",(df["tpr_min"]>30).sum())]
+    bdf = pd.DataFrame(buckets, columns=["Rango","Chats"])
+    bdf["%"] = (bdf["Chats"]/len(tpr_v)*100).round(1) if len(tpr_v) else 0
+    c1, c2 = st.columns([1,1.5])
     with c1:
-        fig = px.line(evo, x="periodo", y="1ra respuesta (min)", markers=True,
-                      color_discrete_sequence=[OY_TEAL], title="1ra respuesta — mediana (min)")
-        fig.add_hline(y=META_TPR_MED, line_dash="dash", line_color=OY_WARN)
-        st.plotly_chart(style_fig(fig, 300), use_container_width=True)
+        st.dataframe(bdf, use_container_width=True, hide_index=True)
     with c2:
-        fig = px.line(evo, x="periodo", y="% Churn", markers=True,
-                      color_discrete_sequence=[OY_WARN], title="% Churn de plan")
-        fig.add_hline(y=META_CHURN, line_dash="dash", line_color=OY_OK)
-        st.plotly_chart(style_fig(fig, 300), use_container_width=True)
+        cols_sla = [OY_OK,"#7BC96F",OY_AMBER,"#E8842E",OY_WARN]
+        fig = go.Figure()
+        for i,(r,n,p) in enumerate(zip(bdf["Rango"],bdf["Chats"],bdf["%"])):
+            fig.add_trace(go.Bar(x=[n],y=[r],orientation="h",
+                                  marker_color=cols_sla[i],
+                                  text=f"{n:,} ({p:.1f}%)",textposition="outside",name=r))
+        fig.update_layout(showlegend=False,title="Distribución SLA de Primera Respuesta",
+                          yaxis={"categoryorder":"array","categoryarray":[b[0] for b in buckets[::-1]]})
+        st.plotly_chart(sfig(fig,280), use_container_width=True)
 
-    evo_x = evo.copy(); evo_x["periodo"] = evo_x["periodo"].dt.strftime("%Y-%m-%d")
-    st.dataframe(evo_x, use_container_width=True, hide_index=True)
-    st.download_button("⬇️ Descargar evolución (.csv)",
-                       evo_x.to_csv(index=False).encode("utf-8"), "evolucion.csv", "text/csv")
-
-
-# ╔══════════════════════════════════════════════════════════════════╗
-#  8 · MÉTRICAS CHATS / DETALLE  (espejo PDF p9)
-# ╚══════════════════════════════════════════════════════════════════╝
-with tab_det:
-    st.markdown('<div class="sec-title">📋 Métricas de Chats (Detalle)</div>', unsafe_allow_html=True)
-    c1, c2 = st.columns([2, 2])
-    search = c1.text_input("🔎 Buscar cliente, teléfono o etiqueta", "")
-    s1, s2, s3 = c2.columns(3)
-    solo_cal = s1.checkbox("Calificados"); solo_churn = s2.checkbox("Churn plan"); solo_30 = s3.checkbox("TPR>30min")
-
-    d = df.copy()
-    d["1ra resp (min)"] = d["tpr_min"].round(2)
-    d["Interac (min)"]  = d["dur_min"].round(1)
-    d["Resol (min)"]    = d["resol_min"].round(1)
-    cols = {"contact":"Cliente","phone":"Teléfono","agent":"Agente","tag":"Equipo",
-            "region":"Región","created_at":"Fecha","status":"Estado","rating":"Calif.",
-            "1ra resp (min)":"1ra resp (min)","Interac (min)":"Interac (min)","Resol (min)":"Resol (min)",
-            "labels":"Etiquetas","finish_type":"Cierre","es_churn_plan":"¿Churn?"}
-    d = d[list(cols)].rename(columns=cols)
-    if search:
-        m = (d["Cliente"].fillna("").str.contains(search, case=False)
-             | d["Teléfono"].fillna("").str.contains(search, case=False)
-             | d["Etiquetas"].fillna("").str.contains(search, case=False))
-        d = d[m]
-    if solo_cal:   d = d[d["Calif."] != "-"]
-    if solo_churn: d = d[d["¿Churn?"] == True]
-    if solo_30:    d = d[d["1ra resp (min)"] > 30]
-
-    st.markdown(f"**{len(d):,} registros**")
-    st.dataframe(d, use_container_width=True, height=500, hide_index=True)
-    st.download_button("⬇️ Descargar detalle filtrado (.csv)",
-                       d.to_csv(index=False).encode("utf-8"), "detalle_chats.csv", "text/csv")
-
-
-# ════════════════════════════════════════════════════════════════════
-#  PESTAÑAS QUE REQUIEREN OTROS EXPORTS DE TREBLE
-# ════════════════════════════════════════════════════════════════════
-def need_export(nombre, columnas, archivo):
-    st.markdown(f'<div class="info-box">📎 Esta sección reproduce <b>{nombre}</b> del tablero de Treble. '
-                f'El archivo <code>treble.csv</code> no contiene estos datos; súbelos en el panel lateral '
-                f'(<i>{archivo}</i>) para activarla.<br>Columnas esperadas: {", ".join(columnas)}.</div>',
+    # KPI INVISIBLE #1 — Lag de asignación
+    st.markdown('<div class="invis">🔮 <b>KPI INVISIBLE #1 — Lag de Asignación</b><br>'
+                f'El 7.9% de los chats esperó >30 min <b>antes de ser asignado</b> a un agente. '
+                f'El TPR del agente empieza a correr desde la asignación — '
+                f'pero el cliente ya lleva media hora esperando sin que nadie lo vea. '
+                f'Promedio lag: {fmt_min(lag_prom)} · 90.1% se asigna en &lt;1 min.</div>',
                 unsafe_allow_html=True)
 
+    lag_buckets = [("< 1 min",int((lag_v<1).sum())),
+                   ("1–5 min",int(lag_v.between(1,5).sum())),
+                   ("5–30 min",int(lag_v.between(5,30).sum())),
+                   ("> 30 min",int((lag_v>30).sum()))]
+    ldf = pd.DataFrame(lag_buckets, columns=["Rango","Chats"])
+    ldf["%"] = (ldf["Chats"]/len(lag_v)*100).round(1) if len(lag_v) else 0
+    fig = px.bar(ldf, x="Chats", y="Rango", orientation="h", color="Chats",
+                 color_continuous_scale=[[0,OY_OK],[0.5,OY_AMBER],[1,OY_WARN]],
+                 text="%", title="Lag de Asignación (creación → asignación a agente)")
+    fig.update_traces(texttemplate="%{text:.1f}%", textposition="outside")
+    fig.update_layout(showlegend=False, yaxis={"categoryorder":"array",
+                      "categoryarray":["< 1 min","1–5 min","5–30 min","> 30 min"]})
+    st.plotly_chart(sfig(fig,240), use_container_width=True)
 
-with tab_out:
-    st.markdown('<div class="sec-title">📤 Outbound / Consumo de Conversaciones</div>', unsafe_allow_html=True)
-    if up_out is not None:
-        o = load_simple(up_out)
-        st.caption(f"{len(o):,} registros cargados.")
-        tipo_col = next((c for c in o.columns if c.lower() in ("contact_type","tipo","type")), None)
-        if tipo_col:
-            vc = o[tipo_col].str.upper().value_counts()
-            st.markdown('<div class="kpi-grid">' +
-                kpi_card("Total", f"{len(o):,}", kind="alt") +
-                kpi_card("Inbound", f"{int(vc.get('INBOUND',0)):,}", kind="") +
-                kpi_card("Outbound", f"{int(vc.get('OUTBOUND',0)):,}", kind="ok") +
-                '</div>', unsafe_allow_html=True)
-            fig = px.pie(values=vc.values, names=vc.index, hole=.4,
-                         color_discrete_sequence=[OY_TEAL, OY_BLUE], title="Distribución por tipo")
-            st.plotly_chart(style_fig(fig, 320), use_container_width=True)
-        name_col = next((c for c in o.columns if c.lower() in ("name","conversación","conversacion","conversation")), None)
-        if name_col:
-            top = o[name_col].value_counts().head(10).reset_index()
-            top.columns = ["Conversación","Total"]
-            fig = px.bar(top, x="Total", y="Conversación", orientation="h", color="Total",
-                         color_continuous_scale="Teal", title="Top 10 conversaciones más enviadas")
-            fig.update_layout(showlegend=False, yaxis={"categoryorder":"total ascending"})
-            st.plotly_chart(style_fig(fig, 380), use_container_width=True)
-        st.dataframe(o.head(300), use_container_width=True, hide_index=True)
-    else:
-        need_export("Consumo / Outbound", ["Name","Contact_Type","Created_At","Country_Code","Cellphone"],
-                    "Outbound / Consumo")
+    # KPI INVISIBLE #2 — Chats fantasma
+    st.markdown(f'<div class="invis">🔮 <b>KPI INVISIBLE #2 — Chats Fantasma</b><br>'
+                f'{n_ghost:,} chats ({pct_ghost}%) fueron cerrados con el <b>último mensaje '
+                f'del CLIENTE</b>. El cliente preguntó o escribió algo y el agente no respondió '
+                f'antes del cierre. Daño de imagen silencioso. Meta &lt;{META_GHOST}%.</div>',
+                unsafe_allow_html=True)
 
-with tab_fail:
-    st.markdown('<div class="sec-title">❌ Fallas de Envío</div>', unsafe_allow_html=True)
-    if up_fail is not None:
-        f = load_simple(up_fail); st.dataframe(f, use_container_width=True, hide_index=True)
-    else:
-        need_export("Fallas de Envío", ["Conversación","Fallas","% fallas","Sesión activa","Bloqueado"],
-                    "Fallas de envío")
-
-with tab_inv:
-    st.markdown('<div class="sec-title">💰 Inversión (USD)</div>', unsafe_allow_html=True)
-    st.markdown('<div class="info-box">Precios Treble por conversación: 0–5k <b>$0.20</b> · '
-                '5k–10k <b>$0.18</b> · 10k–20k <b>$0.15</b> · &gt;20k <b>$0.12</b>.</div>', unsafe_allow_html=True)
-    if up_out is not None:
-        o = load_simple(up_out); n = len(o)
-        price = 0.20 if n<=5000 else 0.18 if n<=10000 else 0.15 if n<=20000 else 0.12
-        st.markdown('<div class="kpi-grid">' +
-            kpi_card("Conversaciones", f"{n:,}", kind="alt") +
-            kpi_card("Precio/conv.", f"${price:.2f}", kind="") +
-            kpi_card("Inversión estimada", f"${n*price:,.2f}", kind="ok") +
-            '</div>', unsafe_allow_html=True)
-    else:
-        need_export("Inversión", ["Conversación","Total","Inversión"], "Outbound / Consumo")
-
-with tab_hsm:
-    st.markdown('<div class="sec-title">📨 HSM</div>', unsafe_allow_html=True)
-    if up_hsm is not None:
-        h = load_simple(up_hsm); st.dataframe(h, use_container_width=True, hide_index=True)
-    else:
-        need_export("HSM (plantillas)", ["HSM","enviados","entregados","Respuestas","% Respuestas"], "HSM")
-
-with tab_conx:
-    st.markdown('<div class="sec-title">🟢 Horarios ON/OFF & Tiempo de Conexión</div>', unsafe_allow_html=True)
-    if up_conx is not None:
-        c = load_simple(up_conx); st.dataframe(c, use_container_width=True, hide_index=True)
-    else:
-        need_export("Horarios / Conexión", ["agent_email","conection_time","date","status"], "Horarios / Conexión")
+    c3, c4 = st.columns(2)
+    with c3:
+        # TPR por agente
+        ag_tpr = ag_churn[ag_churn["TPR val"].notna()].sort_values("TPR val")
+        tpr_colors = [OY_OK if t<=2 else OY_AMBER if t<=10 else OY_WARN for t in ag_tpr["TPR val"]]
+        fig = px.bar(ag_tpr, x="TPR val (min)", y="Agente", orientation="h",
+                     color="TPR val",
+                     color_continuous_scale="RdYlGn_r",
+                     title="TPR promedio por agente (min)",
+                     labels={"TPR val":"min"})
+        fig.add_vline(x=META_TPR, line_dash="dash", line_color=OY_TEAL)
+        fig.update_layout(showlegend=False, yaxis={"categoryorder":"total descending"})
+        st.plotly_chart(sfig(fig,420), use_container_width=True)
+    with c4:
+        # Correlación TPR vs Rating
+        if len(tpr_v) > 100:
+            st.subheader("TPR vs Rating — ¿Hay correlación?")
+            df_cal2 = df[df["calificado"] & df["tpr_min"].notna()].copy()
+            df_cal2["tpr_bucket"] = pd.cut(df_cal2["tpr_min"],
+                bins=[0,1,2,5,10,30,9999],labels=["0–1min","1–2min","2–5min","5–10min","10–30min",">30min"])
+            cr = df_cal2.groupby("tpr_bucket",observed=True)["rating_num"].agg(["mean","count"]).reset_index()
+            cr.columns = ["Bucket TPR","Rating prom","n"]
+            fig = px.bar(cr, x="Bucket TPR", y="Rating prom",
+                         color="Rating prom", color_continuous_scale="RdYlGn",
+                         range_color=[4.5,5.0], text="Rating prom",
+                         title="Rating promedio por tiempo de respuesta")
+            fig.update_traces(texttemplate="%{text:.3f}", textposition="outside")
+            fig.add_hline(y=META_RATING, line_dash="dash", line_color=OY_TEAL)
+            st.plotly_chart(sfig(fig,380), use_container_width=True)
+            st.caption("Correlación TPR vs Rating: casi nula (r≈-0.02). El cliente no penaliza mucho el tiempo — "
+                       "pero >30min sí baja el rating de 4.78 → 4.62.")
 
 
-# ── Footer ───────────────────────────────────────────────────────────
+# ╔═══════════════════════════════════════╗
+#  TAB 5 — RENDIMIENTO AGENTES
+# ╚═══════════════════════════════════════╝
+with t5:
+    st.markdown('<div class="sec">📊 Rendimiento de Agentes</div>', unsafe_allow_html=True)
+    st.markdown('<div class="kpi-grid">' +
+        kpi("Chats atendidos", f"{N:,}", kind="alt") +
+        kpi("Rating equipo", f"{rating:.2f}", kind="ok" if rating >= META_RATING else "amber") +
+        kpi("TPR promedio", fmt_min(tpr_prom)) +
+        kpi("% Calificados", f"{pct_cal}%", kind="amber") +
+        kpi("Handle time real", fmt_min(hnd_med), "mediana activo", kind="dark") +
+        '</div>', unsafe_allow_html=True)
+
+    ag = build_agent_kpis(df)
+    cols_show = ["Agente","Chats","% Total","TPR prom (min)","Handle (min)",
+                 "Rating","% Calificados","% Churn","Cola","Nivel"]
+
+    def color_nivel(v):
+        if v == "⭐ Top": return f"color:{OY_OK};font-weight:700"
+        if v == "⚠️ Atención": return f"color:{OY_WARN};font-weight:700"
+        return ""
+
+    sty = (ag[cols_show].style
+           .map(color_nivel, subset=["Nivel"])
+           .map(lambda v: f"color:{OY_WARN};font-weight:700"
+                if isinstance(v,(int,float)) and not np.isnan(v) and v > META_CHURN*0.8 else "",
+                subset=["% Churn"])
+           .format({"Rating":"{:.2f}","% Total":"{:.1f}","% Calificados":"{:.1f}",
+                    "% Churn":"{:.1f}","TPR prom (min)":"{:.2f}","Handle (min)":"{:.1f}"}))
+    st.dataframe(sty, use_container_width=True, hide_index=True, height=480)
+
+    st.markdown("""
+    **Leyenda de Nivel:**
+    ⭐ **Top** = Rating ≥4.85 Y TPR ≤2 min  ·  
+    ✅ **Bueno** = Indicadores en rango aceptable  ·  
+    ⚠️ **Atención** = Rating <4.5 O TPR >10 min O %Churn >40%
+    """)
+
+    st.markdown('<div class="invis">🔮 <b>KPI INVISIBLE #3 — % Churn en cartera por agente:</b> '
+                'Algunos agentes tienen >70% de sus chats como churn de plan. '
+                'Estos agentes NO están haciendo soporte, están manejando cancelaciones. '
+                'Ver columna "% Churn" — si supera 50%, revisar routing urgente.</div>',
+                unsafe_allow_html=True)
+
+    st.download_button("⬇️ CSV ranking agentes", ag.to_csv(index=False).encode(),
+                       "agentes.csv","text/csv")
+
+    c1, c2 = st.columns(2)
+    with c1:
+        fig = px.bar(ag.sort_values("Chats",ascending=False).head(15),
+                     x="Chats", y="Agente", orientation="h",
+                     color="Rating", color_continuous_scale="RdYlGn",
+                     range_color=[3.5,5], title="Top agentes por volumen (color=rating)")
+        fig.update_layout(yaxis={"categoryorder":"total ascending"})
+        st.plotly_chart(sfig(fig,420), use_container_width=True)
+    with c2:
+        # Heatmap agente × semana
+        top15 = df["agent"].value_counts().head(15).index
+        dsd = df[df["agent"].isin(top15)].copy()
+        pw = (dsd.groupby(["agent","semana"],observed=True).size()
+              .reset_index(name="Chats")
+              .pivot(index="agent",columns="semana",values="Chats").fillna(0))
+        pw.columns = [str(c) for c in pw.columns]
+        fig = px.imshow(pw, aspect="auto", color_continuous_scale="Teal",
+                        labels=dict(x="Semana",y="",color="Chats"),
+                        title="Chats por agente × semana")
+        st.plotly_chart(sfig(fig,420), use_container_width=True)
+
+
+# ╔═══════════════════════════════════════╗
+#  TAB 6 — ETIQUETAS & MOTIVOS
+# ╚═══════════════════════════════════════╝
+with t6:
+    st.markdown('<div class="sec">🏷️ Etiquetas & Motivos de Contacto</div>', unsafe_allow_html=True)
+
+    if pct_sin_lbl > 10:
+        st.markdown(f'<div class="alrt">⚠️ <b>{int(df["sin_label"].sum()):,} chats sin etiqueta '
+                    f'({pct_sin_lbl}%)</b> — punto ciego operativo. '
+                    f'Sin label no se puede analizar la causa raíz correctamente.</div>',
+                    unsafe_allow_html=True)
+
+    exp = df.copy()
+    exp["label"] = exp["labels"].fillna("Sin etiqueta").str.split(r",\s*")
+    exp = exp.explode("label"); exp["label"] = exp["label"].str.strip()
+    top20 = exp["label"].value_counts().head(20).reset_index()
+    top20.columns = ["Motivo","Chats"]
+    top20["%"] = (top20["Chats"]/N*100).round(1)
+
+    c1, c2 = st.columns(2)
+    with c1:
+        fig = px.bar(top20, x="Chats", y="Motivo", orientation="h", color="Chats",
+                     color_continuous_scale="Teal", title="Top 20 motivos de contacto")
+        fig.update_layout(showlegend=False, yaxis={"categoryorder":"total ascending"})
+        st.plotly_chart(sfig(fig,520), use_container_width=True)
+    with c2:
+        fig = px.pie(top20.head(12), names="Motivo", values="Chats",
+                     color_discrete_sequence=COLOR_SEQ, hole=.35,
+                     title="Proporción top 12 motivos")
+        st.plotly_chart(sfig(fig,520), use_container_width=True)
+
+    # KPI INVISIBLE #4 — Transferencias
+    st.markdown(f'<div class="invis">🔮 <b>KPI INVISIBLE #4 — Costo de las Transferencias</b><br>'
+                f'{int(df["transferido"].sum()):,} chats fueron transferidos ({pct_transf}%). '
+                f'El rating CON transferencia es <b>4.54</b> vs <b>4.79</b> sin transferencia. '
+                f'Cada transferencia cuesta <b>0.25 puntos de satisfacción</b>. '
+                f'El cliente tiene que explicar su problema dos veces.</div>',
+                unsafe_allow_html=True)
+
+    # KPI INVISIBLE #5 — Reintentos
+    st.markdown(f'<div class="invis">🔮 <b>KPI INVISIBLE #5 — FCR Fallida (Reintentos)</b><br>'
+                f'{n_reint:,} casos donde el mismo cliente contactó <b>más de una vez el mismo día</b>. '
+                f'Esto indica que el problema NO se resolvió en el primer contacto. '
+                f'FCR estimado: {safe_pct(len(contactos)-n_reint, len(contactos))}% de clientes '
+                f'resolvieron en un solo contacto diario.</div>', unsafe_allow_html=True)
+
+    # Rating por etiqueta
+    rlbl2 = exp[exp["calificado"]].groupby("label")["rating_num"].agg(["mean","count"]).reset_index()
+    rlbl2 = rlbl2[rlbl2["count"] >= 5].sort_values("mean")
+    fig = px.bar(rlbl2, x="mean", y="label", orientation="h", color="mean",
+                 color_continuous_scale="RdYlGn", range_color=[1,5],
+                 text="mean", title="Rating promedio por etiqueta")
+    fig.update_traces(texttemplate="%{text:.2f}", textposition="outside")
+    fig.update_layout(showlegend=False, yaxis={"categoryorder":"total ascending"})
+    st.plotly_chart(sfig(fig, max(380, len(rlbl2)*18)), use_container_width=True)
+
+    # Tabla completa
+    tab_lbl = exp.groupby("label").agg(
+        Chats=("phone","size"),
+        Rating=("rating_num","mean"),
+        n_cal=("calificado","sum")
+    ).reset_index()
+    tab_lbl["% del total"] = (tab_lbl["Chats"]/N*100).round(1)
+    tab_lbl["Rating"] = tab_lbl["Rating"].round(2)
+    tab_lbl["¿Cancelación?"] = tab_lbl["label"].str.contains(
+        r"Cancelar|Reembolso|Reprog|Postergac|Esp\. cancel",case=False,regex=True).map({True:"Sí",False:"No"})
+    tab_lbl = tab_lbl.sort_values("Chats",ascending=False).rename(columns={"label":"Etiqueta"})
+    st.dataframe(tab_lbl[["Etiqueta","Chats","% del total","Rating","¿Cancelación?"]],
+                 use_container_width=True, hide_index=True, height=320)
+    st.download_button("⬇️ CSV etiquetas completo", tab_lbl.to_csv(index=False).encode(),
+                       "etiquetas.csv","text/csv")
+
+
+# ╔════════════════════════════════════════════╗
+#  TAB 7 — CLIENTES QUE MÁS LLAMAN
+# ╚════════════════════════════════════════════╝
+with t7:
+    st.markdown('<div class="sec">📞 Clientes que más contactan & sus motivos</div>',
+                unsafe_allow_html=True)
+    st.markdown(
+        '<div class="info">'
+        '<b>¿Cómo se construye esto?</b> Se agrupa el CSV por la columna <code>phone</code> '
+        '(número de teléfono del cliente). Se cuentan todas sus conversaciones en el período filtrado. '
+        'El "Motivo principal" es la etiqueta más frecuente de sus chats (columna <code>labels</code>). '
+        '"¿Churn?" = tuvo al menos 1 chat con etiqueta "Cancelar plan" o "Reembolso". '
+        '"Handle time" = mediana del tiempo real activo entre mensajes (no la duración del CSV).'
+        '</div>', unsafe_allow_html=True)
+
+    st.markdown('<div class="kpi-grid">' +
+        kpi("Volumen recurrente", f"{pct_vol_recur}%",
+            f"{int(contactos[contactos>=2].sum()):,} de {N:,} chats — clientes con ≥2 contactos",
+            kind="alt") +
+        kpi("Clientes únicos", f"{len(contactos):,}",
+            f"promedio {N/len(contactos):.2f} chats por cliente") +
+        kpi("Clientes recurrentes (≥2)", f"{n_recur:,}",
+            f"{safe_pct(n_recur, len(contactos))}% de los clientes volvió a contactar", kind="amber") +
+        kpi("Clientes con ≥5 contactos", f"{int((contactos>=5).sum()):,}",
+            "alta recurrencia = problema posiblemente no resuelto", kind="warn") +
+        kpi("Clientes con ≥10 contactos", f"{int((contactos>=10).sum()):,}",
+            "requieren revisión individual", kind="warn") +
+        kpi("Máx contactos 1 cliente", f"{int(contactos.max())}",
+            "cliente más recurrente del período", kind="dark") +
+        '</div>', unsafe_allow_html=True)
+
+    st.markdown('<div class="invis">🔮 <b>Dato clave:</b> el 90.4% del volumen de chats proviene de '
+                'clientes recurrentes. Cuando el motivo principal de esa recurrencia es cancelación, '
+                'indica un problema de retención estructural, no puntual.</div>',
+                unsafe_allow_html=True)
+
+    st.markdown("---")
+    tf1, tf2, tf3, tf4 = st.columns(4)
+    c_search  = tf1.text_input("🔎 Buscar nombre / teléfono / motivo", "")
+    c_min     = tf2.number_input("Mínimo de contactos", min_value=1, value=2, step=1)
+    c_churn   = tf3.checkbox("Solo clientes con churn")
+    c_sinres  = tf4.checkbox("Solo reintentos mismo día")
+    n_mostrar = st.slider("Cuántos clientes mostrar (top N)", 5, 50, 25, step=5)
+
+    rows_c = []
+    for ph, g in df.groupby("phone"):
+        hnd_c = g.loc[g["handle_min"] < 500, "handle_min"].dropna()
+        motivos_sorted = (g["labels"].fillna("").str.split(r",\s*").explode()
+                          .str.strip().value_counts())
+        m1 = motivos_sorted.index[0] if len(motivos_sorted) > 0 else "–"
+        m2 = motivos_sorted.index[1] if len(motivos_sorted) > 1 else "–"
+        rows_c.append({
+            "Teléfono":          ph,
+            "Cliente":           safe_mode(g["contact"]) if "contact" in g.columns else "–",
+            "Región":            safe_mode(g["region"]),
+            "Contactos":         len(g),
+            "Motivo principal":  m1,
+            "2° Motivo":         m2,
+            "Cola frecuente":    safe_mode(g["tag"]) if "tag" in g.columns else "–",
+            "Agente frecuente":  safe_mode(g["agent"]),
+            "Rating prom":       round(float(g["rating_num"].mean()), 2)
+                                 if g["rating_num"].notna().any() else np.nan,
+            "% Calificó":        safe_pct(g["calificado"].sum(), len(g)),
+            "Handle med (min)":  round(float(hnd_c.median()), 1) if len(hnd_c) else np.nan,
+            "¿Churn?":           "Sí" if g["es_churn"].any() else "No",
+            "¿Reprog?":          "Sí" if g["es_reprog"].any() else "No",
+            "Reintento mismo día": "Sí" if g["reintento"].any() else "No",
+            "Último contacto":   str(g["created_at"].max().date())
+                                 if g["created_at"].notna().any() else "–",
+        })
+
+    tc_full = pd.DataFrame(rows_c).sort_values("Contactos", ascending=False)
+    if c_search:
+        tc_full = tc_full[tc_full.apply(
+            lambda r: c_search.lower() in str(r["Cliente"]).lower()
+                   or c_search.lower() in str(r["Teléfono"]).lower()
+                   or c_search.lower() in str(r["Motivo principal"]).lower(), axis=1)]
+    tc_full = tc_full[tc_full["Contactos"] >= c_min]
+    if c_churn:  tc_full = tc_full[tc_full["¿Churn?"] == "Sí"]
+    if c_sinres: tc_full = tc_full[tc_full["Reintento mismo día"] == "Sí"]
+    tc_show = tc_full.head(n_mostrar)
+
+    st.markdown(f"**{len(tc_full):,} clientes** cumplen los filtros — mostrando top {min(n_mostrar, len(tc_full))}")
+    sty_tc = (tc_show.style
+              .map(lambda v: f"color:{OY_WARN};font-weight:700;background:#FFF0F0"
+                   if v == "Sí" else "", subset=["¿Churn?"])
+              .map(lambda v: f"color:{OY_AMBER};font-weight:600"
+                   if v == "Sí" else "", subset=["¿Reprog?","Reintento mismo día"])
+              .format({"Rating prom":"{:.2f}","Handle med (min)":"{:.1f}",
+                       "% Calificó":"{:.1f}"}))
+    st.dataframe(sty_tc, use_container_width=True, hide_index=True, height=500)
+
+    d1c, d2c = st.columns(2)
+    d1c.download_button("⬇️ CSV clientes filtrados",
+                        tc_show.to_csv(index=False).encode(), "clientes.csv","text/csv")
+    d2c.download_button("⬇️ CSV todos los clientes",
+                        tc_full.to_csv(index=False).encode(), "clientes_todos.csv","text/csv")
+
+    st.markdown("---")
+    ca1, ca2 = st.columns(2)
+    with ca1:
+        st.subheader("Por qué llaman los clientes recurrentes")
+        st.caption("Fuente: columna labels · clientes con ≥2 contactos en el período")
+        rec_ph2 = set(contactos[contactos >= 2].index)
+        rexp_c  = (df[df["phone"].isin(rec_ph2)]["labels"]
+                   .fillna("Sin etiqueta").str.split(r",\s*").explode().str.strip())
+        rmot_c  = rexp_c.value_counts().head(12).reset_index()
+        rmot_c.columns = ["Motivo","Chats"]
+        fig_rc = px.bar(rmot_c, x="Chats", y="Motivo", orientation="h",
+                        color="Chats", color_continuous_scale="Teal", text="Chats")
+        fig_rc.update_traces(textposition="outside")
+        fig_rc.update_layout(showlegend=False, yaxis={"categoryorder":"total ascending"})
+        st.plotly_chart(sfig(fig_rc, 420), use_container_width=True)
+    with ca2:
+        st.subheader("¿Cuántas veces contactan?")
+        st.caption("Fuente: columna phone · distribución de frecuencia por cliente")
+        freq_bins = pd.cut(contactos, bins=[0,1,2,5,10,20,999],
+                           labels=["1 contacto","2","3–5","6–10","11–20",">20"])
+        freq_df = freq_bins.value_counts().sort_index().reset_index()
+        freq_df.columns = ["Frecuencia","Clientes"]
+        freq_df["%"] = (freq_df["Clientes"]/len(contactos)*100).round(1)
+        fig_freq = px.bar(freq_df, x="Frecuencia", y="Clientes",
+                          color="Clientes", color_continuous_scale="Teal",
+                          text=freq_df["Clientes"].astype(str) + " (" + freq_df["%"].astype(str) + "%)")
+        fig_freq.update_traces(textposition="outside")
+        fig_freq.update_layout(showlegend=False)
+        st.plotly_chart(sfig(fig_freq, 420), use_container_width=True)
+
+    st.subheader("¿Los clientes que más llaman califican diferente?")
+    st.caption("Fuente: columna rating · comparativa de satisfacción según frecuencia de contacto")
+    df_freq = df.copy()
+    df_freq["freq_cliente"] = df_freq["phone"].map(contactos)
+    df_freq["bucket_freq"] = pd.cut(df_freq["freq_cliente"],
+                                     bins=[0,1,2,5,10,20,999],
+                                     labels=["1 contacto","2","3–5","6–10","11–20",">20"])
+    rat_freq = df_freq[df_freq["calificado"]].groupby("bucket_freq", observed=True)["rating_num"].agg(
+        ["mean","count"]).reset_index()
+    rat_freq.columns = ["Frecuencia","Rating prom","n calificados"]
+    rat_freq["Rating prom"] = rat_freq["Rating prom"].round(3)
+    fig_rf = px.bar(rat_freq, x="Frecuencia", y="Rating prom",
+                    color="Rating prom", color_continuous_scale="RdYlGn",
+                    range_color=[4.4, 5.0], text="Rating prom")
+    fig_rf.update_traces(texttemplate="%{text:.3f}", textposition="outside")
+    fig_rf.add_hline(y=META_RATING, line_dash="dash", line_color=OY_TEAL)
+    st.plotly_chart(sfig(fig_rf, 300), use_container_width=True)
+
+
+# ╔════════════════════════════════════════════╗
+#  TAB 8 — EXPLORADOR DE CHATS
+# ╚════════════════════════════════════════════╝
+with t8:
+    st.markdown('<div class="sec">📋 Explorador de Chats (detalle individual)</div>',
+                unsafe_allow_html=True)
+    st.markdown(
+        '<div class="info"><b>¿Qué ves aquí?</b> Cada fila es una conversación del CSV. '
+        'Filtra por cliente, teléfono o etiqueta. '
+        '<code>TPR (min)</code> = tiempo desde asignación hasta primer mensaje del agente · '
+        '<code>Handle (min)</code> = tiempo real activo (primer → último mensaje) · '
+        '<code>Fantasma</code> = último mensaje fue del cliente, no del agente. '
+        'Descarga el resultado para análisis externo.</div>', unsafe_allow_html=True)
+
+    st.markdown(
+        f'<div class="invis">🔮 <b>KPI INVISIBLE #6 — Handle Time Activo Real</b><br>'
+        f'La columna <code>duration</code> mide tiempo hasta el cierre (a veces días después). '
+        f'El handle time real (primer→último mensaje) es mediana <b>{fmt_min(hnd_med)}</b> '
+        f'vs duración promedio ~327 min. El trabajo real del agente es 6× menor de lo que sugiere la duración.</div>',
+        unsafe_allow_html=True)
+
+    st.markdown('<div class="kpi-grid">' +
+        kpi("Handle time real (mediana)", fmt_min(hnd_med), "primer→último mensaje activo", kind="alt") +
+        kpi("Duración promedio (CSV)", fmt_min(df["dur_min"].mean()),
+            "incluye tiempo post-cierre manual", kind="dark") +
+        kpi("Chats fantasma", f"{n_ghost:,}", f"{pct_ghost}% sin respuesta final del agente",
+            kind="warn" if pct_ghost > META_GHOST else "amber") +
+        '</div>', unsafe_allow_html=True)
+
+    ef1, ef2, ef3 = st.columns(3)
+    srch_ex  = ef1.text_input("🔎 Buscar cliente / teléfono / etiqueta","", key="srch_ex")
+    f_gho_ex = ef2.checkbox("Solo chats fantasma 👻")
+    f_t30_ex = ef3.checkbox("Solo TPR >30 min")
+    ef4, ef5 = st.columns(2)
+    f_chu_ex = ef4.checkbox("Solo chats con churn")
+    f_rep_ex = ef5.checkbox("Solo reprogramaciones")
+
+    det = df.copy()
+    det["TPR (min)"]    = det["tpr_min"].round(2)
+    det["Handle (min)"] = det["handle_min"].round(1)
+    det = det.rename(columns={
+        "contact":"Cliente","phone":"Teléfono","agent":"Agente","tag":"Cola",
+        "created_at":"Fecha","rating":"Calif.","labels":"Etiquetas","status":"Estado",
+        "ghost":"Fantasma","es_churn":"Churn","es_reprog":"Reprog","region":"Región"})
+    disp = [c for c in ["Cliente","Teléfono","Agente","Cola","Región","Fecha","Calif.",
+                         "TPR (min)","Handle (min)","Etiquetas","Estado","Fantasma","Churn","Reprog"]
+             if c in det.columns]
+    d = det.copy()
+    if srch_ex:
+        m = (d.get("Cliente",pd.Series("",index=d.index)).fillna("").str.contains(srch_ex,case=False) |
+             d.get("Teléfono",pd.Series("",index=d.index)).fillna("").str.contains(srch_ex,case=False) |
+             d.get("Etiquetas",pd.Series("",index=d.index)).fillna("").str.contains(srch_ex,case=False))
+        d = d[m]
+    if f_gho_ex: d = d[d.get("Fantasma",pd.Series(False,index=d.index)) == True]
+    if f_t30_ex: d = d[d["TPR (min)"] > 30]
+    if f_chu_ex: d = d[d.get("Churn",pd.Series(False,index=d.index)) == True]
+    if f_rep_ex: d = d[d.get("Reprog",pd.Series(False,index=d.index)) == True]
+
+    st.caption(f"**{len(d):,}** registros de {N:,} totales")
+    st.dataframe(d[[c for c in disp if c in d.columns]].head(500),
+                 use_container_width=True, hide_index=True, height=460)
+    st.download_button("⬇️ CSV detalle filtrado",
+                       d[[c for c in disp if c in d.columns]].to_csv(index=False).encode(),
+                       "detalle_chats.csv","text/csv")
+
+
+# ╔═══════════════════════════════════════╗
+#  TAB 9 — INSIGHTS & RECOMENDACIONES
+# ╚═══════════════════════════════════════╝
+with t9:
+    st.markdown('<div class="sec">💡 Insights & Recomendaciones Estratégicas</div>',
+                unsafe_allow_html=True)
+    st.caption(f"Basado en análisis de {N:,} chats · {f_ini} → {f_fin} · Para uso estratégico del equipo directivo")
+
+    # KPI rápido banner
+    st.markdown('<div class="kpi-grid">' +
+        kpi("Contactos únicos", f"{len(contactos):,}", f"{N/len(contactos):.2f} chats/cliente prom", kind="alt") +
+        kpi("SLA <2 min", f"{pct_sla2}%", "diferenciador competitivo", kind="ok") +
+        kpi("Sin etiqueta", f"{pct_sin_lbl}%", f"{int(df['sin_label'].sum()):,} chats", kind="warn" if pct_sin_lbl>10 else "amber") +
+        kpi("Transferidos", f"{pct_transf}%", f"rating cae 0.25 pts", kind="amber") +
+        '</div>', unsafe_allow_html=True)
+
+    # ── SECCIÓN 1: ALERTAS CRÍTICAS ──────────────────────────
+    st.markdown('<div class="sec red">🔴 ALERTAS CRÍTICAS — Acción inmediata</div>',
+                unsafe_allow_html=True)
+
+    alertas = [
+        ("Crisis de retención activa", f"{pct_churn}% son cancelaciones de plan ({int(df['es_churn'].sum()):,} chats)",
+         "Pérdida directa de clientes activos. Meta 8% superada.",
+         "Crear playbook de retención. Asignar 2–3 agentes especializados a 'Cancelar plan'.",
+         "Dir. Operaciones", "Semana 1"),
+        ("Chats fantasma no resueltos", f"{n_ghost:,} chats ({pct_ghost}%) cerrados con último mensaje del cliente",
+         "Cliente ignorado al cierre. Daño silencioso de satisfacción.",
+         "Alerta automática a las 2h sin respuesta del agente. Revisión diaria de chats fantasma.",
+         "Supervisores", "Semana 1"),
+        ("Routing de churn a 3 agentes", "Carlos Jiménez (79.6%), Laura Pereira (72.2%), Alonso Palacios (70.8%) tienen >70% de sus chats en churn",
+         "No está claro si es asignación deliberada o falla de routing.",
+         "Auditar reglas de asignación. Si es deliberado, documentarlo como equipo retención.",
+         "Coordinadores", "Semana 1"),
+        ("15% de chats sin etiqueta", f"{int(df['sin_label'].sum()):,} chats sin label ({pct_sin_lbl}%)",
+         "Punto ciego en reportería. Cifras reales de cancelación pueden ser mayores.",
+         "Hacer el campo 'Etiqueta' obligatorio al cerrar chat en Treble.",
+         "Líder de Calidad", "Semana 2"),
+        ("Lag asignación >30 min", f"7.9% de chats esperó más de 30 min antes de ser asignado",
+         "El cliente espera sin que ningún agente lo vea. El TPR reportado no captura esto.",
+         "Revisar reglas de enrutamiento. Alerta si chat sin asignar >10 min.",
+         "Tecnología / Ops", "Semana 2"),
+    ]
+    for problema, dato, impacto, accion, resp, plazo in alertas:
+        st.markdown(f'''<div class="crit">
+        <b>🔴 {problema}</b><br>
+        📊 <i>Dato:</i> {dato}<br>
+        ⚠️ <i>Impacto:</i> {impacto}<br>
+        ✅ <i>Acción:</i> {accion}<br>
+        👤 {resp} · 📅 {plazo}
+        </div>''', unsafe_allow_html=True)
+
+    # ── SECCIÓN 2: ALERTAS DE ATENCIÓN ───────────────────────
+    st.markdown('<div class="sec amb">🟡 ALERTAS — Atención en el corto plazo</div>',
+                unsafe_allow_html=True)
+
+    atencion = [
+        ("Cobertura de encuesta baja", f"{pct_cal}% (meta {META_CAL}%)",
+         "Solo calificaron {n_cal:,} de {N:,} chats. El rating de 4.8 sobreestima la satisfacción real.",
+         "Encuesta automática post-chat con 1 pregunta (NPS o estrella). Meta: >70% cobertura."),
+        ("Transferencias degradan satisfacción", f"{pct_transf}% transferidos → rating baja de 4.79 a 4.54 (-0.25 pts)",
+         "El cliente explica su problema dos veces.",
+         "Revisar reglas de enrutamiento inicial. Mejorar asignación automática por etiqueta."),
+        ("FCR fallida — reintentos mismo día", f"{n_reint:,} casos con >1 contacto el mismo día",
+         "El problema no se resolvió en el primer contacto.",
+         "Identificar los motivos con más reintentos y crear guías de resolución."),
+        ("Rating bajo en horario nocturno", "4am–6am: rating 4.54 (vs 4.79 global)",
+         "La cobertura nocturna tiene menor calidad percibida.",
+         "Revisar protocolos nocturnos. Considerar turno dedicado con capacitación específica."),
+    ]
+    for prob, dato, imp, rec in atencion:
+        st.markdown(f'<div class="alrt"><b>🟡 {prob}</b> — {dato}<br>'
+                    f'<i>Impacto:</i> {imp}<br><i>Acción:</i> {rec}</div>', unsafe_allow_html=True)
+
+    # ── SECCIÓN 3: FORTALEZAS ────────────────────────────────
+    st.markdown('<div class="sec ok">✅ FORTALEZAS — Comunicar, no dar por sentado</div>',
+                unsafe_allow_html=True)
+
+    fortalezas = [
+        ("SLA de respuesta excepcional", f"{pct_sla2}% responde en ≤2 min · {pct_sla5}% en ≤5 min · mediana {fmt_min(tpr_med)}",
+         "Diferenciador competitivo real. Los clientes perciben atención inmediata.",
+         "Publicar como benchmark público. Usar en materiales de ventas y retención."),
+        ("Rating general alto sobre muestra calificada", f"{rating:.2f}/5 sobre {n_cal:,} calificados",
+         "El equipo que califica tiene alta satisfacción. Base de calidad sólida.",
+         "Subir cobertura de encuesta para validar si aplica a toda la operación."),
+        ("Equipo especialistas: calidad excepcional",
+         f"Cola 'especialistas': {len(df[df['tag'].str.lower().eq('especialistas')] if 'tag' in df.columns else pd.DataFrame()):,} chats con rating superior",
+         "El modelo de atención especializada es el mejor de la operación.",
+         "Documentar el protocolo y replicarlo en el canal general."),
+        ("Handle time activo real eficiente", f"Mediana {fmt_min(hnd_med)} de trabajo activo real",
+         "La carga real del agente es 6x menor de lo que sugiere la 'duración'.",
+         "Usar este dato para dimensionar correctamente la capacidad del equipo."),
+    ]
+    for fort, dato, xq, como in fortalezas:
+        st.markdown(f'<div class="good"><b>✅ {fort}</b><br>'
+                    f'{dato}<br><i>Por qué importa:</i> {xq}<br>'
+                    f'<i>Cómo potenciarlo:</i> {como}</div>', unsafe_allow_html=True)
+
+    # ── SECCIÓN 4: OPORTUNIDADES ─────────────────────────────
+    st.markdown('<div class="sec blue">🚀 OPORTUNIDADES — Dónde invertir</div>',
+                unsafe_allow_html=True)
+
+    oportunidades = [
+        ("Retención proactiva antes de la cancelación",
+         f"2.389 'Cancelar plan' + 133 'Reembolso' = {int(df['es_churn'].sum()):,} pérdidas",
+         "Reducir 30–40% del churn con contacto preventivo",
+         "Flujo automático 48h antes del vencimiento para clientes en riesgo. Mayor ROI disponible.","Alta"),
+        ("Subir cobertura de encuesta de 36% → 70%",
+         f"Hoy: {pct_cal}% · Potencial: {int(N*0.7):,} ratings/período",
+         "Triplica la data de calidad para gestión de personas",
+         "Encuesta post-chat automática con 1 sola pregunta. Configuración en Treble.","Alta"),
+        ("Etiquetado obligatorio al cerrar",
+         f"15% sin label = {int(df['sin_label'].sum()):,} chats ciegos",
+         "Elimina punto ciego. Las cifras de cancelación pueden ser mayores.",
+         "Campo 'Etiqueta' requerido en Treble al cerrar chat. Taxonomía máx. 20 opciones.","Alta"),
+        ("Alerta automática para chats fantasma",
+         f"{n_ghost:,} chats cerrados sin respuesta final del agente",
+         "Elimina daño de imagen silencioso",
+         "Alerta a supervisor si el último mensaje tiene >2h y es del cliente.","Media"),
+        ("Self-service 'Cambiar tarjeta'",
+         "440+ chats solo para cambiar método de pago",
+         "Libera capacidad del equipo para casos de mayor valor",
+         "Implementar flujo self-service en app. Un solo agente (Andrea Hurtado) maneja el 90%.","Media"),
+        ("Especializar 2–3 agentes en retención",
+         f"Agentes con >70% churn en cartera ya lo están haciendo informalmente",
+         "Formaliza el rol, da herramientas y mide correctamente",
+         "Crear equipo de retención con playbook, scripts y métricas propias.","Alta"),
+    ]
+    for op, dato, pot, init, prior in oportunidades:
+        prior_color = "crit" if prior=="Alta" else "alrt"
+        st.markdown(f'<div class="{prior_color}"><b>🚀 {op}</b> — Prioridad {prior}<br>'
+                    f'📊 {dato}<br>🎯 <i>Potencial:</i> {pot}<br>'
+                    f'💡 <i>Iniciativa:</i> {init}</div>', unsafe_allow_html=True)
+
+    # ── SECCIÓN 5: HOJA DE RUTA ──────────────────────────────
+    st.markdown('<div class="sec">🗓️ Hoja de Ruta — Plan 90 días</div>', unsafe_allow_html=True)
+    roadmap = [
+        ("Fase 1\nSem 1–2","Etiquetado obligatorio","% chats con label ≥95%","Líder Calidad","Sem 1","🔴"),
+        ("Fase 1\nSem 1–2","Alerta chats fantasma >2h","% chats fantasma <2%","Supervisores","Sem 1","🔴"),
+        ("Fase 1\nSem 1–2","Auditar routing churn","Agentes churn <40%","Coordinadores","Sem 2","🔴"),
+        ("Fase 2\nMes 1","Encuesta post-chat automática","Cobertura encuesta >50%","Tecnología","Mes 1","🟡"),
+        ("Fase 2\nMes 1","Revisar reglas de transferencia","% transferencias <5%","Ops/Tech","Mes 1","🟡"),
+        ("Fase 2\nMes 1","Playbook de retención (Cancelar plan)","Churn <8%","Dir. Ops","Mes 1","🔴"),
+        ("Fase 3\nMes 2–3","Self-service cambiar tarjeta","Reducir 400+ chats/mes","Desarrollo","Mes 2","🟡"),
+        ("Fase 3\nMes 2–3","Equipo dedicado de retención","Churn <6%","RRHH / Ops","Mes 3","🟢"),
+        ("Fase 3\nMes 2–3","Flujo retención proactivo 48h","Reducir churn 30%","CRM / Tech","Mes 3","🟢"),
+    ]
+    rm_df = pd.DataFrame(roadmap, columns=["Fase","Iniciativa","KPI de éxito","Responsable","Plazo","Prioridad"])
+    st.dataframe(rm_df, use_container_width=True, hide_index=True)
+    st.download_button("⬇️ Descargar hoja de ruta (.csv)",
+                       rm_df.to_csv(index=False).encode(), "hoja_de_ruta.csv","text/csv")
+
+# ── Footer ──────────────────────────────────────────────────────────
 st.divider()
-st.caption(f"Opción Yo · Dashboard ATC v2 · Fuente: treble.csv · "
-           f"Metas: Calif≥{META_RATING} · TPR≤{fmt_min(META_TPR_MED)} · SLA2≥{META_SLA2}% · "
-           f"Churn≤{META_CHURN}% · Cobertura≥{META_PCT_CAL}% · Streamlit + Plotly")
+st.caption(f"Opción Yo · Dashboard ATC v3 · {N:,} chats analizados · "
+           f"Metas: Calif≥{META_RATING} · TPR≤{fmt_min(META_TPR)} · "
+           f"SLA2≥{META_SLA2}% · Churn≤{META_CHURN}% · "
+           f"Streamlit + Plotly · Datos: treble.csv")
+
