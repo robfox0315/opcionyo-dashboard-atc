@@ -1,0 +1,12 @@
+# Secretos y credenciales — NUNCA subir
+.streamlit/secrets.toml
+
+# Datos sensibles (descomenta si NO quieres versionar el CSV con datos reales)
+# treble.csv
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+.DS_Store
