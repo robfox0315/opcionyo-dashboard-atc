@@ -292,26 +292,28 @@ def build_agent_kpis(data: pd.DataFrame) -> pd.DataFrame:
         tpr = g["tpr_min"].dropna();   nt = len(tpr)
         hnd = g.loc[g["handle_min"] < 500, "handle_min"].dropna()
         rows.append({
-            "Agente":        ag,
-            "Chats":         n,
-            "% Total":       safe_pct(n, len(data)),
-            "TPR prom (min)": round(float(tpr.mean()), 2) if nt else np.nan,
-            "TPR val":       round(float(tpr.mean()), 2) if nt else np.nan,
-            "Handle (min)":  round(float(hnd.median()), 1) if len(hnd) else np.nan,
-            "Rating":        round(float(cal.mean()), 2) if nc else np.nan,
-            "% Calificados": safe_pct(nc, n),
-            "% Churn":       safe_pct(g["es_churn"].sum(), n),
-            "Cola":          safe_mode(g["tag"]) if "tag" in g.columns else "–",
-            "Nivel":         "",
+            "Agente":          ag,
+            "Chats":           n,
+            "% Total":         safe_pct(n, len(data)),
+            "TPR prom (min)":  round(float(tpr.mean()), 2) if nt else np.nan,
+            "TPR val (min)":   round(float(tpr.mean()), 2) if nt else np.nan,
+            "Handle (min)":    round(float(hnd.median()), 1) if len(hnd) else np.nan,
+            "Rating":          round(float(cal.mean()), 2) if nc else np.nan,
+            "% Calificados":   safe_pct(nc, n),
+            "% Churn":         safe_pct(g["es_churn"].sum(), n),
+            "Cola":            safe_mode(g["tag"]) if "tag" in g.columns else "–",
+            "Nivel":           "",
         })
     df_ag = pd.DataFrame(rows).sort_values("Chats", ascending=False)
     def nivel(r):
-        if (not np.isnan(r["Rating"]) and r["Rating"] >= META_RATING and
-                not np.isnan(r["TPR val"]) and r["TPR val"] <= 2):
+        tpr_v_ = r["TPR val (min)"]
+        rat_   = r["Rating"]
+        if (not (isinstance(rat_,  float) and np.isnan(rat_))  and rat_  >= META_RATING and
+            not (isinstance(tpr_v_,float) and np.isnan(tpr_v_)) and tpr_v_ <= 2):
             return "⭐ Top"
-        if (not np.isnan(r["Rating"]) and r["Rating"] < 4.5) or \
-           (not np.isnan(r["TPR val"]) and r["TPR val"] > 10) or \
-           r["% Churn"] > 40:
+        if ((not (isinstance(rat_,  float) and np.isnan(rat_))  and rat_  < 4.5) or
+            (not (isinstance(tpr_v_,float) and np.isnan(tpr_v_)) and tpr_v_ > 10) or
+            r["% Churn"] > 40):
             return "⚠️ Atención"
         return "✅ Bueno"
     df_ag["Nivel"] = df_ag.apply(nivel, axis=1)
@@ -922,14 +924,13 @@ with t4:
 
     c3, c4 = st.columns(2)
     with c3:
-        # TPR por agente
-        ag_tpr = ag_churn[ag_churn["TPR val"].notna()].sort_values("TPR val")
-        tpr_colors = [OY_OK if t<=2 else OY_AMBER if t<=10 else OY_WARN for t in ag_tpr["TPR val"]]
+        # TPR por agente — columna correcta: "TPR val (min)"
+        ag_tpr = ag_churn[ag_churn["TPR val (min)"].notna()].sort_values("TPR val (min)")
         fig = px.bar(ag_tpr, x="TPR val (min)", y="Agente", orientation="h",
-                     color="TPR val",
+                     color="TPR val (min)",
                      color_continuous_scale="RdYlGn_r",
                      title="TPR promedio por agente (min)",
-                     labels={"TPR val":"min"})
+                     labels={"TPR val (min)":"min"})
         fig.add_vline(x=META_TPR, line_dash="dash", line_color=OY_TEAL)
         fig.update_layout(showlegend=False, yaxis={"categoryorder":"total descending"})
         st.plotly_chart(sfig(fig,420), use_container_width=True)
@@ -1465,4 +1466,3 @@ st.caption(f"Opción Yo · Dashboard ATC v3 · {N:,} chats analizados · "
            f"Metas: Calif≥{META_RATING} · TPR≤{fmt_min(META_TPR)} · "
            f"SLA2≥{META_SLA2}% · Churn≤{META_CHURN}% · "
            f"Streamlit + Plotly · Datos: treble.csv")
-
