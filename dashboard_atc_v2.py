@@ -248,13 +248,23 @@ def load_data(file) -> pd.DataFrame:
     df["sla_30min"] = df["tpr_min"] <= 30
     df["dur_outlier"] = df["dur_min"] > 300
 
-    # Cancelaciones — 3 BLOQUES SEPARADOS
+    # Cancelaciones — 3 BLOQUES SEPARADOS Y BIEN DEFINIDOS
     lbl = df["labels"].fillna("")
-    df["es_churn"]   = lbl.str.contains(r"Cancelar plan|Reembolso", case=False, regex=True)
-    df["es_reprog"]  = lbl.str.contains(
-        r"Cancelaci[oó]n \+24|Cancelaci[oó]n tard|Postergaci|Esp\. cancela",
+
+    # CHURN = pérdida real de ingresos (cancelan la suscripción)
+    df["es_churn"]    = lbl.str.contains(r"Cancelar plan|Reembolso", case=False, regex=True)
+
+    # CANCELACIÓN DE SESIÓN = cancelan una sesión puntual (NO cancelan el plan)
+    df["es_cancel_sesion"] = lbl.str.contains(
+        r"Cancelaci[oó]n \+24|Cancelaci[oó]n tard|Esp\. cancela",
         case=False, regex=True)
-    df["es_cancel"]  = df["es_churn"] | df["es_reprog"]
+
+    # POSTERGACIÓN DE PAGO = tema financiero/administrativo (va en bloque propio)
+    df["es_postergacion"] = lbl.str.contains(r"Postergaci", case=False, regex=True)
+
+    # REPROG = cancelación de sesión + postergación (juntos para tendencia consolidada)
+    df["es_reprog"]   = df["es_cancel_sesion"] | df["es_postergacion"]
+    df["es_cancel"]   = df["es_churn"] | df["es_reprog"]
 
     # Chats fantasma (último mensaje del cliente)
     if "last_message_sender" in df.columns:
@@ -500,7 +510,7 @@ with t1:
     if pct_sla2 >= META_SLA2:
         st.markdown(
             f'<div class="good">✅ <b>SLA ≤2 min: {pct_sla2}%</b> — '
-            f'mediana {fmt_min(tpr_med)}. Operación de respuesta de primer nivel.</div>',
+            f'promedio {fmt_min(tpr_prom)}. Operación de respuesta de primer nivel.</div>',
             unsafe_allow_html=True)
 
     # ╌╌╌ BLOQUE 1: TOTALES OPERACIONALES ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
@@ -757,104 +767,160 @@ with t2:
 #  TAB 3 — CANCELACIONES & CHURN
 # ╚═══════════════════════════════════════╝
 with t3:
-    n_churn = int(df["es_churn"].sum())
-    n_reprog = int(df["es_reprog"].sum())
-    n_canc  = int(df["es_cancel"].sum())
+    n_churn        = int(df["es_churn"].sum())
+    n_cancel_sesion= int(df["es_cancel_sesion"].sum())
+    n_postergacion = int(df["es_postergacion"].sum())
+    n_reprog       = int(df["es_reprog"].sum())
+    n_canc         = int(df["es_cancel"].sum())
+    pct_cancel_ses = safe_pct(n_cancel_sesion, N)
+    pct_posterg    = safe_pct(n_postergacion, N)
 
     # ── BLOQUE A: CHURN DE PLAN ──────────────────────────────
-    st.markdown('<div class="sec red">🔴 BLOQUE A — Churn de Plan (pérdida de ingresos)</div>',
+    st.markdown('<div class="sec red">🔴 BLOQUE A — Churn de Plan (pérdida de suscripción)</div>',
                 unsafe_allow_html=True)
-    st.markdown(f'<div class="crit">Etiquetas: <b>"Cancelar plan"</b> + <b>"Reembolso"</b> — '
-                f'son cancelaciones de suscripción, no reagendas. Cada una es un cliente perdido.</div>',
-                unsafe_allow_html=True)
+    st.markdown(
+        '<div class="crit">Etiquetas contadas: <b>"Cancelar plan"</b> + <b>"Reembolso"</b><br>'
+        'El cliente cancela su <b>suscripción completa</b>. '
+        'Es pérdida directa de ingresos recurrentes. '
+        '<b>No confundir con cancelación de sesión</b> — eso está en el Bloque B.</div>',
+        unsafe_allow_html=True)
     st.markdown('<div class="kpi-grid">' +
-        kpi("Churn de plan", f"{n_churn:,}", f"{pct_churn}% del total", kind="warn") +
-        kpi("Reembolsos incluidos", f"{int(df['labels'].fillna('').str.contains('Reembolso',case=False).sum()):,}", kind="warn") +
-        kpi("Meta churn", f"≤{META_CHURN}%", "🔴 SUPERADA" if pct_churn > META_CHURN else "✅ OK",
+        kpi("Churn de plan", f"{n_churn:,}",
+            f"{pct_churn}% del total de chats", kind="warn") +
+        kpi("  Cancelar plan",
+            f'{int(df["labels"].fillna("").str.contains("Cancelar plan",case=False).sum()):,}',
+            "cancelan suscripción", kind="warn") +
+        kpi("  Reembolsos",
+            f'{int(df["labels"].fillna("").str.contains("Reembolso",case=False).sum()):,}',
+            "solicitud de devolución", kind="warn") +
+        kpi("Meta churn", f"≤{META_CHURN}%",
+            "🔴 SUPERADA" if pct_churn > META_CHURN else "✅ OK",
             kind="warn" if pct_churn > META_CHURN else "ok") +
         '</div>', unsafe_allow_html=True)
     st.plotly_chart(gauge("💸 Churn de Plan", pct_churn, META_CHURN, [0,30],
         [{"range":[0,META_CHURN],"color":"#D5F5E3"},{"range":[META_CHURN,18],"color":"#FDEBD0"},
          {"range":[18,30],"color":"#FADBD8"}],"%",True), use_container_width=False)
 
-    # ── BLOQUE B: REPROGRAMACIONES ───────────────────────────
-    st.markdown('<div class="sec amb">🟠 BLOQUE B — Reprogramaciones (reagenda operativa)</div>',
+    # ── BLOQUE B: CANCELACIÓN DE SESIÓN ──────────────────────
+    st.markdown('<div class="sec amb">🟠 BLOQUE B — Cancelación de Sesión (no cancela el plan)</div>',
                 unsafe_allow_html=True)
-    sub_map = {
-        "Cancelación +24hrs": r"Cancelaci[oó]n \+24",
-        "Cancelación tardía": r"Cancelaci[oó]n tard",
-        "Postergación de fecha": r"Postergaci",
-        "Esp. cancela sesión": r"Esp\. cancela",
+    st.markdown(
+        '<div class="alrt">Etiquetas contadas: <b>"Cancelación +24hrs"</b> · '
+        '<b>"Cancelación tardía"</b> · <b>"Esp. cancela sesión"</b><br>'
+        'El cliente cancela una <b>sesión puntual</b> pero <b>mantiene su suscripción</b>. '
+        'Es un problema operativo (reagenda, inasistencia), no de retención de ingresos.</div>',
+        unsafe_allow_html=True)
+    sub_cancel = {
+        "Cancelación +24hrs":   r"Cancelaci[oó]n \+24",
+        "Cancelación tardía":   r"Cancelaci[oó]n tard",
+        "Esp. cancela sesión":  r"Esp\. cancela",
     }
-    sub_rows = [{"Sub-motivo":k,
-                 "Chats":int(df["labels"].fillna("").str.contains(v,case=False,regex=True).sum())}
-                for k,v in sub_map.items()]
-    sub_df = pd.DataFrame(sub_rows).sort_values("Chats",ascending=False)
-    sub_df["%"] = (sub_df["Chats"]/N*100).round(1)
+    sub_rows_b = [{"Sub-motivo": k,
+                   "Chats": int(df["labels"].fillna("").str.contains(v, case=False, regex=True).sum())}
+                  for k, v in sub_cancel.items()]
+    sub_df_b = pd.DataFrame(sub_rows_b).sort_values("Chats", ascending=False)
+    sub_df_b["%"] = (sub_df_b["Chats"]/N*100).round(1)
+
     st.markdown('<div class="kpi-grid">' +
-        kpi("Reprogramaciones", f"{n_reprog:,}", f"{pct_reprog}% del total", kind="amber") +
-        kpi("Sub-motivo #1", sub_df.iloc[0]["Sub-motivo"] if len(sub_df) else "–",
-            f'{sub_df.iloc[0]["Chats"]:,} chats' if len(sub_df) else "", kind="amber") +
+        kpi("Cancelaciones de sesión", f"{n_cancel_sesion:,}",
+            f"{pct_cancel_ses}% del total", kind="amber") +
+        kpi("Sub-motivo #1", sub_df_b.iloc[0]["Sub-motivo"] if len(sub_df_b) else "–",
+            f'{sub_df_b.iloc[0]["Chats"]:,} chats' if len(sub_df_b) else "", kind="amber") +
         '</div>', unsafe_allow_html=True)
 
-    c1, c2 = st.columns(2)
-    with c1:
-        fig = px.bar(sub_df, x="Chats", y="Sub-motivo", orientation="h",
-                     color="Chats", color_continuous_scale=[[0,"#FFF0E0"],[1,OY_AMBER]],
-                     text="Chats", title="Composición de reprogramaciones")
+    cb1, cb2 = st.columns(2)
+    with cb1:
+        fig = px.bar(sub_df_b, x="Chats", y="Sub-motivo", orientation="h",
+                     color="Chats",
+                     color_continuous_scale=[[0,"#FFF0E0"],[1,OY_AMBER]],
+                     text="Chats", title="Composición: cancelaciones de sesión")
         fig.update_traces(textposition="outside")
         fig.update_layout(showlegend=False, yaxis={"categoryorder":"total ascending"})
-        st.plotly_chart(sfig(fig, 280), use_container_width=True)
-    with c2:
-        st.dataframe(sub_df, use_container_width=True, hide_index=True)
+        st.plotly_chart(sfig(fig, 240), use_container_width=True)
+    with cb2:
+        st.dataframe(sub_df_b, use_container_width=True, hide_index=True)
 
-    # ── BLOQUE C: VISIÓN CONSOLIDADA ─────────────────────────
-    st.markdown('<div class="sec blue">📊 BLOQUE C — Visión Consolidada</div>',
+    # ── BLOQUE C: POSTERGACIÓN DE FECHA (pago/plan) ──────────
+    st.markdown('<div class="sec dark">🔵 BLOQUE C — Postergación de Fecha (pago o plan)</div>',
                 unsafe_allow_html=True)
+    st.markdown(
+        '<div class="info">Etiqueta contada: <b>"Postergación de fecha"</b><br>'
+        'El cliente solicita postergar la <b>fecha de cobro o vencimiento de su plan</b>. '
+        'Es un tema administrativo/financiero — diferente a cancelar sesión y diferente a cancelar el plan.</div>',
+        unsafe_allow_html=True)
     st.markdown('<div class="kpi-grid">' +
-        kpi("Total cancelaciones", f"{n_canc:,}", f"{safe_pct(n_canc,N)}% del total", kind="alt") +
-        kpi("Churn (ingresos)", f"{pct_churn}%", kind="warn") +
-        kpi("Reprogramaciones", f"{pct_reprog}%", kind="amber") +
-        kpi("Hora pico cancelación", "11am–13pm", "concentra 18% del churn", kind="dark") +
+        kpi("Postergaciones de fecha", f"{n_postergacion:,}",
+            f"{pct_posterg}% del total de chats", kind="dark") +
         '</div>', unsafe_allow_html=True)
 
-    # Tendencia mensual
-    evo = df.groupby(gc).agg(churn=("es_churn","sum"),reprog=("es_reprog","sum"),n=("phone","size")).reset_index()
-    evo["% Churn"] = (evo["churn"]/evo["n"]*100).round(1)
-    evo["% Reprog"] = (evo["reprog"]/evo["n"]*100).round(1)
+    # ── BLOQUE D: VISIÓN CONSOLIDADA ─────────────────────────
+    st.markdown('<div class="sec blue">📊 BLOQUE D — Visión Consolidada</div>',
+                unsafe_allow_html=True)
+    st.markdown('<div class="kpi-grid">' +
+        kpi("Total (todos los tipos)", f"{n_canc:,}", f"{safe_pct(n_canc,N)}% del total", kind="alt") +
+        kpi("Churn de plan", f"{pct_churn}%", "pérdida de suscripción", kind="warn") +
+        kpi("Cancelación de sesión", f"{pct_cancel_ses}%", "mantiene el plan", kind="amber") +
+        kpi("Postergación de fecha", f"{pct_posterg}%", "tema administrativo", kind="dark") +
+        '</div>', unsafe_allow_html=True)
+
+    # Tendencia mensual — solo churn vs cancelación de sesión (postergación va aparte)
+    evo = df.groupby(gc).agg(
+        churn=("es_churn","sum"),
+        cancel_ses=("es_cancel_sesion","sum"),
+        posterg=("es_postergacion","sum"),
+        n=("phone","size")).reset_index()
+    evo["% Churn plan"]     = (evo["churn"]/evo["n"]*100).round(1)
+    evo["% Cancel. sesión"] = (evo["cancel_ses"]/evo["n"]*100).round(1)
+    evo["% Postergación"]   = (evo["posterg"]/evo["n"]*100).round(1)
     evo[gc] = pd.to_datetime(evo[gc].astype(str))
-    fig = px.line(evo, x=gc, y=["% Churn","% Reprog"], markers=True,
-                  color_discrete_map={"% Churn":OY_WARN,"% Reprog":OY_AMBER},
-                  title="Tendencia mensual: Churn vs Reprogramaciones")
+    fig = px.line(evo, x=gc,
+                  y=["% Churn plan","% Cancel. sesión","% Postergación"],
+                  markers=True,
+                  color_discrete_map={"% Churn plan":OY_WARN,
+                                      "% Cancel. sesión":OY_AMBER,
+                                      "% Postergación":OY_BLUE},
+                  title="Tendencia: Churn vs Cancelación de Sesión vs Postergación")
     fig.add_hline(y=META_CHURN, line_dash="dash", line_color=OY_OK,
                   annotation_text=f"Meta churn {META_CHURN}%")
-    st.plotly_chart(sfig(fig, 300), use_container_width=True)
+    st.plotly_chart(sfig(fig, 320), use_container_width=True)
 
-    c3, c4 = st.columns(2)
-    with c3:
-        # Agentes con más churn
-        st.subheader("🔴 Agentes con mayor % de churn en cartera")
+    cd1, cd2 = st.columns(2)
+    with cd1:
+        # Obs 8: Agentes de retención — cambiar texto, no es problema de routing
+        st.subheader("👥 Agentes del equipo de retención")
         ag_c = ag_churn[["Agente","Chats","% Churn"]].sort_values("% Churn",ascending=False).head(10)
-        ag_c["⚠️"] = ag_c["% Churn"].apply(lambda x: "🔴 ALERTA" if x > 40 else "✅")
+        ag_c["Rol"] = ag_c["% Churn"].apply(
+            lambda x: "🎯 Equipo Retención" if x > 40 else "📞 Soporte General")
         st.dataframe(ag_c, use_container_width=True, hide_index=True)
-        st.markdown('<div class="invis">🔮 <b>KPI INVISIBLE #3 — % Churn en cartera:</b> '
-                    'Algunos agentes tienen >70% de sus chats como churn. '
-                    'No están haciendo soporte — están gestionando cancelaciones. '
-                    '¿Routing deliberado o problema de asignación?</div>', unsafe_allow_html=True)
-    with c4:
-        # Clientes con cancelaciones repetidas
-        st.subheader("🔁 Clientes con cancelaciones repetidas")
+        st.markdown(
+            '<div class="info">💡 Los agentes con alto % de churn en cartera son el '
+            '<b>equipo de retención</b> — reciben chats de "Cancelar plan" de forma deliberada. '
+            'No es un error de routing; es una asignación intencional. '
+            'Sugerencia: documentar formalmente el rol y medir con KPIs de retención '
+            '(% de clientes retenidos, no % de churn).</div>', unsafe_allow_html=True)
+    with cd2:
+        # Obs 4: Tabla solo con churn real (sin +24hrs)
+        st.subheader("🔁 Clientes con churn de plan repetido")
+        st.caption("Solo clientes con etiqueta 'Cancelar plan' o 'Reembolso' — "
+                   "no incluye cancelaciones de sesión")
         canc_cli = []
-        for ph, g in df[df["es_cancel"]].groupby("phone"):
-            canc_cli.append({"Teléfono":ph,"Cancelaciones":len(g),
-                             "Cliente":safe_mode(g["contact"]) if "contact" in g.columns else "–",
-                             "Sub-tipo":motivo_ppal(g["labels"]),
-                             "¿Churn?":"Sí" if g["es_churn"].any() else "No"})
+        # Obs 4: filtrar solo es_churn (no es_cancel que incluye +24hrs)
+        for ph, g in df[df["es_churn"]].groupby("phone"):
+            canc_cli.append({
+                "Teléfono":    ph,
+                "Cancelaciones": len(g),
+                "Cliente":     safe_mode(g["contact"]) if "contact" in g.columns else "–",
+                "Motivo":      motivo_ppal(g["labels"]),
+            })
         if canc_cli:
             cc_df = pd.DataFrame(canc_cli).sort_values("Cancelaciones",ascending=False).head(15)
+            # Obs 5: link a explorador de chats
             st.dataframe(cc_df, use_container_width=True, hide_index=True, height=300)
-            st.download_button("⬇️ CSV cancelaciones", cc_df.to_csv(index=False).encode(),
-                               "cancelaciones.csv","text/csv")
+            st.caption("💡 Para ver los chats individuales de un cliente, "
+                       "copia su teléfono y pégalo en el buscador de la pestaña 📋 Explorador de Chats")
+            st.download_button("⬇️ CSV churn de plan",
+                               cc_df.to_csv(index=False).encode(),
+                               "churn_plan.csv","text/csv")
 
 
 # ╔═══════════════════════════════════════╗
@@ -901,19 +967,28 @@ with t4:
                 f'Promedio lag: {fmt_min(lag_prom)} · 90.1% se asigna en &lt;1 min.</div>',
                 unsafe_allow_html=True)
 
-    lag_buckets = [("< 1 min",int((lag_v<1).sum())),
-                   ("1–5 min",int(lag_v.between(1,5).sum())),
-                   ("5–30 min",int(lag_v.between(5,30).sum())),
-                   ("> 30 min",int((lag_v>30).sum()))]
+    lag_buckets = [("< 1 min",   int((lag_v<1).sum())),
+                   ("1–5 min",   int(lag_v.between(1,5).sum())),
+                   ("5–30 min",  int(lag_v.between(5,30).sum())),
+                   ("> 30 min",  int((lag_v>30).sum()))]
     ldf = pd.DataFrame(lag_buckets, columns=["Rango","Chats"])
     ldf["%"] = (ldf["Chats"]/len(lag_v)*100).round(1) if len(lag_v) else 0
-    fig = px.bar(ldf, x="Chats", y="Rango", orientation="h", color="Chats",
-                 color_continuous_scale=[[0,OY_OK],[0.5,OY_AMBER],[1,OY_WARN]],
-                 text="%", title="Lag de Asignación (creación → asignación a agente)")
-    fig.update_traces(texttemplate="%{text:.1f}%", textposition="outside")
-    fig.update_layout(showlegend=False, yaxis={"categoryorder":"array",
-                      "categoryarray":["< 1 min","1–5 min","5–30 min","> 30 min"]})
-    st.plotly_chart(sfig(fig,240), use_container_width=True)
+    # Colores fijos: verde = rápido (bueno), rojo = lento (malo)
+    lag_colors = [OY_OK, "#7BC96F", OY_AMBER, OY_WARN]
+    fig = go.Figure()
+    for i, (r, n, p) in enumerate(zip(ldf["Rango"], ldf["Chats"], ldf["%"])):
+        fig.add_trace(go.Bar(
+            x=[n], y=[r], orientation="h",
+            marker_color=lag_colors[i],
+            text=f"{n:,} ({p:.1f}%)", textposition="outside",
+            name=r, showlegend=False))
+    fig.update_layout(
+        title="Lag de Asignación (creación → asignación a agente) — Verde = rápido ✅",
+        yaxis={"categoryorder":"array",
+               "categoryarray":["< 1 min","1–5 min","5–30 min","> 30 min"]})
+    st.plotly_chart(sfig(fig, 240), use_container_width=True)
+    st.caption("🟢 Verde = rápido (bueno) · 🔴 Rojo = lento (problema). "
+               "La barra de <1 min es verde porque el 96.7% de los chats se asigna en menos de 1 minuto — eso es excelente.")
 
     # KPI INVISIBLE #2 — Chats fantasma
     st.markdown(f'<div class="invis">🔮 <b>KPI INVISIBLE #2 — Chats Fantasma</b><br>'
@@ -992,11 +1067,14 @@ with t5:
     ⚠️ **Atención** = Rating <4.5 O TPR >10 min O %Churn >40%
     """)
 
-    st.markdown('<div class="invis">🔮 <b>KPI INVISIBLE #3 — % Churn en cartera por agente:</b> '
-                'Algunos agentes tienen >70% de sus chats como churn de plan. '
-                'Estos agentes NO están haciendo soporte, están manejando cancelaciones. '
-                'Ver columna "% Churn" — si supera 50%, revisar routing urgente.</div>',
-                unsafe_allow_html=True)
+    st.markdown(
+        '<div class="invis">🔮 <b>KPI INVISIBLE #3 — Equipo de Retención</b><br>'
+        'Algunos agentes tienen >70% de sus chats con etiqueta "Cancelar plan". '
+        'Esto <b>no es un error de routing</b> — es una asignación deliberada. '
+        'Esos agentes forman el <b>equipo de retención</b> de Opción Yo. '
+        'Sugerencia: medir su éxito con KPIs de retención '
+        '(% de clientes que NO cancelaron tras el chat), no con métricas de soporte general.</div>',
+        unsafe_allow_html=True)
 
     st.download_button("⬇️ CSV ranking agentes", ag.to_csv(index=False).encode(),
                        "agentes.csv","text/csv")
@@ -1062,12 +1140,16 @@ with t6:
                 f'El cliente tiene que explicar su problema dos veces.</div>',
                 unsafe_allow_html=True)
 
-    # KPI INVISIBLE #5 — Reintentos
-    st.markdown(f'<div class="invis">🔮 <b>KPI INVISIBLE #5 — FCR Fallida (Reintentos)</b><br>'
-                f'{n_reint:,} casos donde el mismo cliente contactó <b>más de una vez el mismo día</b>. '
-                f'Esto indica que el problema NO se resolvió en el primer contacto. '
-                f'FCR estimado: {safe_pct(len(contactos)-n_reint, len(contactos))}% de clientes '
-                f'resolvieron en un solo contacto diario.</div>', unsafe_allow_html=True)
+    # KPI INVISIBLE #5 — Reintentos (sin jerga)
+    st.markdown(
+        f'<div class="invis">🔮 <b>KPI INVISIBLE #5 — Clientes que vuelven a escribir el mismo día</b><br>'
+        f'<b>{n_reint:,} casos</b> donde el mismo cliente contactó más de una vez en el mismo día. '
+        f'Esto sugiere que su problema <b>no quedó resuelto</b> en el primer chat — tuvo que volver a escribir. '
+        f'El <b>{safe_pct(len(contactos)-n_reint, len(contactos))}%</b> de los clientes '
+        f'resolvió en un solo contacto diario. '
+        f'<i>(En la industria esto se mide como FCR — First Contact Resolution, '
+        f'o "Resolución en el Primer Contacto")</i></div>',
+        unsafe_allow_html=True)
 
     # Rating por etiqueta
     rlbl2 = exp[exp["calificado"]].groupby("label")["rating_num"].agg(["mean","count"]).reset_index()
@@ -1338,9 +1420,15 @@ with t9:
          "Cliente ignorado al cierre. Daño silencioso de satisfacción.",
          "Alerta automática a las 2h sin respuesta del agente. Revisión diaria de chats fantasma.",
          "Supervisores", "Semana 1"),
-        ("Routing de churn a 3 agentes", "Carlos Jiménez (79.6%), Laura Pereira (72.2%), Alonso Palacios (70.8%) tienen >70% de sus chats en churn",
-         "No está claro si es asignación deliberada o falla de routing.",
-         "Auditar reglas de asignación. Si es deliberado, documentarlo como equipo retención.",
+        ("Chats fantasma no resueltos", f"{n_ghost:,} chats ({pct_ghost}%) cerrados con último mensaje del cliente",
+         "Cliente ignorado al cierre. Daño silencioso de satisfacción.",
+         "Alerta automática a las 2h sin respuesta del agente. Revisión diaria de chats fantasma.",
+         "Supervisores", "Semana 1"),
+        ("Equipo de retención sin KPIs propios",
+         "Carlos Jiménez, Laura Pereira, Alonso Palacios reciben chats de 'Cancelar plan' de forma deliberada",
+         "Sin KPIs de retención, no se puede medir si el equipo está logrando salvar clientes.",
+         "Definir KPI: % de clientes que NO cancelaron después del chat. "
+         "Separar métricas del equipo de retención de las métricas de soporte general.",
          "Coordinadores", "Semana 1"),
         ("15% de chats sin etiqueta", f"{int(df['sin_label'].sum()):,} chats sin label ({pct_sin_lbl}%)",
          "Punto ciego en reportería. Cifras reales de cancelación pueden ser mayores.",
@@ -1371,9 +1459,10 @@ with t9:
         ("Transferencias degradan satisfacción", f"{pct_transf}% transferidos → rating baja de 4.79 a 4.54 (-0.25 pts)",
          "El cliente explica su problema dos veces.",
          "Revisar reglas de enrutamiento inicial. Mejorar asignación automática por etiqueta."),
-        ("FCR fallida — reintentos mismo día", f"{n_reint:,} casos con >1 contacto el mismo día",
-         "El problema no se resolvió en el primer contacto.",
-         "Identificar los motivos con más reintentos y crear guías de resolución."),
+        ("Clientes que vuelven a escribir el mismo día",
+         f"{n_reint:,} casos con >1 contacto el mismo día",
+         "El problema no se resolvió en el primer chat — el cliente tuvo que volver a escribir.",
+         "Identificar los motivos con más reintentos y crear guías de resolución para esos casos."),
         ("Rating bajo en horario nocturno", "4am–6am: rating 4.54 (vs 4.79 global)",
          "La cobertura nocturna tiene menor calidad percibida.",
          "Revisar protocolos nocturnos. Considerar turno dedicado con capacitación específica."),
@@ -1447,7 +1536,7 @@ with t9:
     roadmap = [
         ("Fase 1\nSem 1–2","Etiquetado obligatorio","% chats con label ≥95%","Líder Calidad","Sem 1","🔴"),
         ("Fase 1\nSem 1–2","Alerta chats fantasma >2h","% chats fantasma <2%","Supervisores","Sem 1","🔴"),
-        ("Fase 1\nSem 1–2","Auditar routing churn","Agentes churn <40%","Coordinadores","Sem 2","🔴"),
+        ("Fase 1\nSem 1–2","Definir KPIs del equipo de retención","% clientes retenidos por agente","Coordinadores","Sem 2","🔴"),
         ("Fase 2\nMes 1","Encuesta post-chat automática","Cobertura encuesta >50%","Tecnología","Mes 1","🟡"),
         ("Fase 2\nMes 1","Revisar reglas de transferencia","% transferencias <5%","Ops/Tech","Mes 1","🟡"),
         ("Fase 2\nMes 1","Playbook de retención (Cancelar plan)","Churn <8%","Dir. Ops","Mes 1","🔴"),
