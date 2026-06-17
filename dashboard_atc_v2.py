@@ -42,19 +42,22 @@ st.markdown("""
 :root{--oy-teal:#16B6C2;--oy-td:#0E8E99;--oy-blue:#2F80ED;
       --oy-ok:#27AE60;--oy-warn:#E5484D;--oy-amb:#F2A33C;--oy-ink:#16323A;}
 .stApp{background:#fff;}
-.block-container{padding-top:.8rem;}
+.block-container{padding-top:1.5rem;}
 h1,h2,h3{color:var(--oy-td);}
 [data-testid="stMetricValue"]{font-size:1.7rem!important;font-weight:800;color:var(--oy-ink);}
 [data-testid="stMetricLabel"]{font-size:.78rem!important;color:#5a6b72;font-weight:600;}
 
-.oy-header{display:flex;align-items:center;gap:14px;
-  background:linear-gradient(90deg,var(--oy-teal) 0%,#1AC3CF 100%);
-  padding:14px 20px;border-radius:14px;margin-bottom:6px;
-  box-shadow:0 6px 18px rgba(22,182,194,.25);}
-.oy-logo{font-weight:800;font-size:1.5rem;color:#fff;line-height:1;}
-.oy-logo span{color:#0A4750;}
-.oy-htitle{color:#fff;font-weight:800;font-size:1.1rem;margin:0;}
-.oy-hsub{color:#E8FBFD;font-size:.8rem;margin:0;}
+.oy-header{display:flex;align-items:center;gap:18px;
+  background:linear-gradient(100deg,var(--oy-td) 0%,var(--oy-teal) 48%,#27D0DC 100%);
+  padding:20px 28px;border-radius:16px;margin:2px 0 12px;
+  box-shadow:0 8px 22px rgba(22,182,194,.28);overflow:visible;}
+.oy-logo{font-weight:800;font-size:2rem;color:#fff;line-height:1.2;
+  letter-spacing:.4px;white-space:nowrap;padding:2px 18px 2px 0;
+  border-right:2px solid rgba(255,255,255,.4);display:flex;align-items:center;}
+.oy-logo span{color:#0A4750;margin-left:6px;}
+.oy-htxt{display:flex;flex-direction:column;justify-content:center;}
+.oy-htitle{color:#fff;font-weight:800;font-size:1.14rem;margin:0;line-height:1.3;}
+.oy-hsub{color:#EAFCFE;font-size:.82rem;margin:3px 0 0;line-height:1.2;}
 
 .sec{background:var(--oy-teal);color:#fff;padding:.4rem 1rem;
   border-radius:8px;font-weight:700;margin:.2rem 0 .7rem;
@@ -402,8 +405,8 @@ def acumular_csv(archivo) -> pd.DataFrame:
 # ══════════════════════════════════════════════════════════════
 st.markdown("""
 <div class="oy-header">
-  <div class="oy-logo">opción<span> yo</span></div>
-  <div>
+  <div class="oy-logo">opción<span>yo</span></div>
+  <div class="oy-htxt">
     <p class="oy-htitle">Dashboard de Gestión · Atención al Cliente</p>
     <p class="oy-hsub">Vista Gerencial · powered by Treble · v3</p>
   </div>
@@ -573,7 +576,114 @@ prom_altas = df.loc[df["rating_num"] >= 4, "rating_num"].mean()
 # ══════════════════════════════════════════════════════════════
 #  TABS
 # ══════════════════════════════════════════════════════════════
-(t1, t2, t3, t4, t5, t6, t7, t8, t9, t_aj) = st.tabs([
+# ══════════════════════════════════════════════════════════════
+#  RESPALDO EXCEL — cálculo del histórico semanal/mensual por agente
+#  Replica las filas de la hoja "AgenteHistorico semanal" del Excel.
+#  Definiciones tomadas de las fórmulas del propio Excel (Base tratada):
+#   · Agrupación por FECHA DE ASIGNACIÓN (assigned_at), semana ISO
+#     fechada al DOMINGO que la cierra.
+#   · Buckets de tiempo idénticos: ≤5min · rango 5-10min · >30min.
+#   · % rating <4 / >4 sobre el TOTAL de chats (igual que tu Histórico global).
+# ══════════════════════════════════════════════════════════════
+RESP_AGENTES = {                       # etiqueta del Excel → nombre real en el CSV
+    "Ivonne Gonzalez":  "Ivonne González",
+    "Estefany Suarez":  "Estefany Suárez",
+    "Samira Pirique":   "Samira Pirique",
+    "Yesith Solano":    "Yesith Solano",
+    "Lizbeth Calcina":  "Lizbeth Calcina",
+    "Mary Cardenas":    "Mary Cárdenas",
+    "Camila Rodriguez": "Camila Rodriguez",
+    "Sofia Castro":     "Sofia Castro",
+    "Erika Quiñonez":   "Erika Quinonez",
+}
+RESP_FILAS = [
+    "Chats atendidos",
+    "Rating ATC",
+    "Porcentaje de chats Rating <4",
+    "Porcentaje rating >4",
+    "Promedio primera respuesta",
+    "Porcentaje de chats atendidos antes de los 5 minutos",
+    "Porcentaje de chats atendidos antes de los 10 minutos",
+    "Porcentaje de chats atendidos después de los 30 minutos",
+    "Tiempo medio interacción",
+    "Duración promedio",
+]
+RESP_MESES = {1:"Enero",2:"Febrero",3:"Marzo",4:"Abril",5:"Mayo",6:"Junio",
+              7:"Julio",8:"Agosto",9:"Septiembre",10:"Octubre",
+              11:"Noviembre",12:"Diciembre"}
+
+
+def _resp_min_to_hms(m) -> str:
+    if pd.isna(m): return ""
+    s = int(round(float(m) * 60))
+    return f"{s//3600}:{(s%3600)//60:02d}:{s%60:02d}"
+
+
+def resp_preparar(dfr: pd.DataFrame) -> pd.DataFrame:
+    """Usa las columnas ya calculadas por load_data (rating_num, tpr_min, dur_min)."""
+    d = dfr.copy()
+    asg = d["assigned_at"] if "assigned_at" in d.columns else d["created_at"]
+    d["_fecha"] = asg.fillna(d["created_at"])
+    d = d[d["_fecha"].notna()].copy()
+    d["_rating"] = d["rating_num"]
+    d["_tpr"]    = d["tpr_min"]
+    d["_dur"]    = d["dur_min"]
+    wd = d["_fecha"].dt.weekday                      # lun=0 … dom=6
+    d["_domingo"] = (d["_fecha"] + pd.to_timedelta(6 - wd, unit="D")).dt.normalize()
+    d["_mes"]     = d["_fecha"].dt.to_period("M")
+    return d
+
+
+def resp_bloque(g: pd.DataFrame) -> dict:
+    n = len(g)
+    if n == 0:
+        return {f: "" for f in RESP_FILAS}
+    r, tpr = g["_rating"], g["_tpr"]
+    return {
+        "Chats atendidos": n,
+        "Rating ATC": round(r.mean(), 2) if r.notna().any() else "",
+        "Porcentaje de chats Rating <4": round((r < 4).sum() / n * 100, 2),
+        "Porcentaje rating >4":          round((r > 4).sum() / n * 100, 2),
+        "Promedio primera respuesta":    _resp_min_to_hms(tpr.mean()),
+        "Porcentaje de chats atendidos antes de los 5 minutos":
+            round((tpr <= 5).sum() / n * 100, 2),
+        "Porcentaje de chats atendidos antes de los 10 minutos":
+            round(((tpr > 5) & (tpr <= 10)).sum() / n * 100, 2),
+        "Porcentaje de chats atendidos después de los 30 minutos":
+            round((tpr > 30).sum() / n * 100, 2),
+        "Tiempo medio interacción": "",              # ← viene de Treble (no en CSV)
+        "Duración promedio": _resp_min_to_hms(g["_dur"].mean()),
+    }
+
+
+def resp_tabla(d: pd.DataFrame, agente_real=None, cierres=True) -> pd.DataFrame:
+    reales = list(RESP_AGENTES.values())
+    base = d[d["agent"].isin(reales)] if agente_real is None \
+        else d[d["agent"] == agente_real]
+    cols = {}
+    for dom, g in sorted(base.groupby("_domingo"), key=lambda x: x[0]):
+        cols[pd.Timestamp(dom).strftime("%d/%m/%Y")] = resp_bloque(g)
+    if cierres:
+        for per, g in sorted(base.groupby("_mes"), key=lambda x: x[0]):
+            cols[f"Cierre {RESP_MESES[per.month]} {per.year}"] = resp_bloque(g)
+    return pd.DataFrame(cols).reindex(RESP_FILAS)
+
+
+def resp_exportar_excel(d: pd.DataFrame, cierres=True):
+    buf = io.BytesIO()
+    with pd.ExcelWriter(buf, engine="openpyxl") as xw:
+        resp_tabla(d, None, cierres).to_excel(xw, sheet_name="Totales 9 agentes")
+        bloques = []
+        for etq, real in RESP_AGENTES.items():
+            t = resp_tabla(d, real, cierres)
+            bloques.append(pd.DataFrame([[""]*t.shape[1]], columns=t.columns, index=[etq]))
+            bloques.append(t)
+            bloques.append(pd.DataFrame([[""]*t.shape[1]], columns=t.columns, index=[""]))
+        pd.concat(bloques).to_excel(xw, sheet_name="Por agente")
+    return buf.getvalue()
+
+
+(t1, t2, t3, t4, t5, t6, t7, t8, t9, t_aj, t_resp) = st.tabs([
     "🏠 Resumen Ejecutivo",
     "⭐ Calificación",
     "🚨 Cancelaciones & Churn",
@@ -584,6 +694,7 @@ prom_altas = df.loc[df["rating_num"] >= 4, "rating_num"].mean()
     "📋 Explorador de Chats",
     "💡 Insights & Recomendaciones",
     "⚙️ Ajuste de Calificaciones",
+    "📑 Respaldo Excel",
 ])
 
 
@@ -1817,6 +1928,86 @@ with t_aj:
         'la sesión esté activa. Si recargas la página se pierden. '
         'Descarga el CSV antes de cerrar para llevar un registro histórico.</div>',
         unsafe_allow_html=True)
+
+
+# ╔════════════════════════════════════════════════════════════╗
+#  TAB 11 — RESPALDO EXCEL (histórico semanal / mensual por agente)
+# ╚════════════════════════════════════════════════════════════╝
+with t_resp:
+    st.markdown('<div class="sec">📑 Respaldo Excel · Histórico semanal y mensual por agente</div>',
+                unsafe_allow_html=True)
+    st.markdown(
+        '<div class="info"><b>¿Para qué sirve?</b><br>'
+        'Reproduce exactamente las filas que llenas a mano en la hoja '
+        '<b>“AgenteHistorico semanal”</b> del Excel, calculadas desde el treble. '
+        'Sube tu CSV en el panel lateral, elige la semana y copia la columna al Excel.<br>'
+        'Muestra siempre los <b>9 agentes</b> indicados, ignorando los filtros de fecha '
+        'del panel (para que tengas todo el histórico disponible).</div>',
+        unsafe_allow_html=True)
+
+    rd = resp_preparar(df_raw)
+    reales = list(RESP_AGENTES.values())
+    presentes = [a for a in reales if a in set(rd["agent"].unique())]
+    faltan = [etq for etq, real in RESP_AGENTES.items() if real not in presentes]
+    if faltan:
+        st.markdown('<div class="alrt">Sin datos en este CSV para: '
+                    + ", ".join(faltan) + '</div>', unsafe_allow_html=True)
+
+    cierres_on = st.toggle("Incluir columnas de cierre mensual", value=True, key="resp_cierres")
+
+    domingos = sorted(rd[rd["agent"].isin(reales)]["_domingo"].unique())
+    if not domingos:
+        st.warning("No hay chats de estos 9 agentes en el histórico cargado.")
+    else:
+        labels_sem = [pd.Timestamp(x).strftime("%d/%m/%Y") for x in domingos]
+
+        # ── 1) Vista por semana (para copiar) ──────────────────────
+        st.markdown("##### 1️⃣ Por semana — vista para copiar")
+        sem = st.selectbox("Semana (domingo que cierra la semana)",
+                           labels_sem, index=len(labels_sem)-1, key="resp_sem")
+        objetivo = pd.Timestamp(pd.to_datetime(sem, format="%d/%m/%Y")).normalize()
+        sub = rd[rd["_domingo"] == objetivo]
+        cols_sem = {"TOTAL (9 agentes)": resp_bloque(sub[sub["agent"].isin(reales)])}
+        for etq, real in RESP_AGENTES.items():
+            cols_sem[etq] = resp_bloque(sub[sub["agent"] == real])
+        tab_sem = pd.DataFrame(cols_sem).reindex(RESP_FILAS)
+        st.dataframe(tab_sem, use_container_width=True, height=420)
+        st.markdown(
+            '<div class="alrt">⚠️ <b>“Tiempo medio interacción” queda en blanco a propósito.</b> '
+            'Treble lo calcula a nivel de mensajes y no viene en este CSV — es la única '
+            'celda que debes copiar del panel de Treble. Las otras 9 son automáticas.</div>',
+            unsafe_allow_html=True)
+
+        # ── 2) Histórico completo por agente ───────────────────────
+        st.divider()
+        st.markdown("##### 2️⃣ Histórico completo (todas las semanas y meses)")
+        with st.expander("🟢 TOTALES — los 9 agentes juntos", expanded=True):
+            st.dataframe(resp_tabla(rd, None, cierres_on), use_container_width=True)
+        for etq, real in RESP_AGENTES.items():
+            if real not in presentes:
+                continue
+            with st.expander(f"👤 {etq}"):
+                st.dataframe(resp_tabla(rd, real, cierres_on), use_container_width=True)
+
+        # ── 3) Descargas ───────────────────────────────────────────
+        st.divider()
+        st.markdown("##### 3️⃣ Descargar")
+        c_dl1, c_dl2 = st.columns(2)
+        with c_dl1:
+            csv_tot = resp_tabla(rd, None, cierres_on).to_csv().encode("utf-8")
+            st.download_button("⬇️ Totales (.csv)", csv_tot,
+                               "respaldo_totales.csv", "text/csv", key="resp_csv")
+        with c_dl2:
+            try:
+                xls = resp_exportar_excel(rd, cierres_on)
+                st.download_button(
+                    "⬇️ Respaldo completo (.xlsx)", xls,
+                    "respaldo_historico_semanal.xlsx",
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    key="resp_xlsx")
+            except Exception:
+                st.caption("Para habilitar el Excel (.xlsx), añade `openpyxl` "
+                           "a requirements.txt. Mientras tanto usa el CSV.")
 
 
 # ── Footer ──────────────────────────────────────────────────────────
