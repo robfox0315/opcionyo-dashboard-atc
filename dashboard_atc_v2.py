@@ -13,6 +13,7 @@ import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+import io
 
 # ══════════════════════════════════════════════════════════════
 #  CONFIGURACIÓN
@@ -279,6 +280,9 @@ def load_data(file) -> pd.DataFrame:
     # Sin etiqueta
     df["sin_label"] = lbl.str.strip().eq("")
 
+    # ID único de chat (phone + created_at) — usado para ajustes de rating
+    df["chat_id"] = df["phone"].astype(str) + "|" + df["created_at"].astype(str)
+
     # Región
     cc = df["phone"].str.extract(r"^\+?(\d{1,3})")[0]
     df["region"] = cc.map(REGION).fillna("Otros")
@@ -351,6 +355,49 @@ def top_clientes(data: pd.DataFrame, n: int = 15) -> pd.DataFrame:
 
 
 # ══════════════════════════════════════════════════════════════
+#  GESTIÓN DEL HISTÓRICO ACUMULADO
+#  Guarda en session_state un DataFrame maestro que crece
+#  cada vez que se sube un CSV nuevo. Nunca reemplaza — siempre
+#  agrega filas nuevas (deduplicando por phone+created_at).
+# ══════════════════════════════════════════════════════════════
+if "df_historico" not in st.session_state:
+    st.session_state["df_historico"] = pd.DataFrame()
+if "archivos_cargados" not in st.session_state:
+    st.session_state["archivos_cargados"] = []
+if "ajustes_rating" not in st.session_state:
+    # dict: {chat_id → {"excluir": True, "motivo": "...", "confirmado_por": "..."}}
+    # chat_id = phone + "|" + created_at
+    st.session_state["ajustes_rating"] = {}
+
+
+def acumular_csv(archivo) -> pd.DataFrame:
+    """Carga un CSV y lo acumula al histórico sin duplicar filas."""
+    try:
+        nuevo = pd.read_csv(archivo, dtype=str)
+    except Exception as e:
+        st.error(f"No se pudo leer el archivo: {e}")
+        return st.session_state["df_historico"]
+
+    if st.session_state["df_historico"].empty:
+        st.session_state["df_historico"] = nuevo
+    else:
+        hist = st.session_state["df_historico"]
+        # Deduplicar: key = phone + created_at (identifica cada chat único)
+        if "phone" in nuevo.columns and "created_at" in nuevo.columns:
+            key_hist = hist["phone"].astype(str) + "|" + hist["created_at"].astype(str)
+            key_new  = nuevo["phone"].astype(str) + "|" + nuevo["created_at"].astype(str)
+            filas_nuevas = nuevo[~key_new.isin(set(key_hist))]
+            if len(filas_nuevas) > 0:
+                st.session_state["df_historico"] = pd.concat(
+                    [hist, filas_nuevas], ignore_index=True)
+        else:
+            st.session_state["df_historico"] = pd.concat(
+                [hist, nuevo], ignore_index=True)
+
+    return st.session_state["df_historico"]
+
+
+# ══════════════════════════════════════════════════════════════
 #  HEADER DE MARCA
 # ══════════════════════════════════════════════════════════════
 st.markdown("""
@@ -368,12 +415,57 @@ st.markdown("""
 # ══════════════════════════════════════════════════════════════
 with st.sidebar:
     st.markdown("### 🟢 Opción Yo · ATC v3")
-    up = st.file_uploader("📂 treble.csv", type=["csv"], key="main")
-    source = up if up is not None else "treble.csv"
+
+    # ── CARGA ACUMULATIVA ────────────────────────────────────
+    st.markdown("#### 📂 Fuente de datos")
+    st.caption("Sube un CSV nuevo cada semana — se **agrega** al histórico sin borrar lo anterior.")
+
+    ups = st.file_uploader(
+        "Subir CSV de Treble (semanal o completo)",
+        type=["csv"],
+        key="uploader_csv",
+        help="Puedes subir la semana completa o solo la semana nueva. El dashboard acumula automáticamente.")
+
+    if ups is not None:
+        nombre = ups.name
+        if nombre not in st.session_state["archivos_cargados"]:
+            with st.spinner(f"Acumulando {nombre}…"):
+                acumular_csv(ups)
+                st.session_state["archivos_cargados"].append(nombre)
+            st.success(f"✅ {nombre} acumulado")
+
+    # Mostrar estado del histórico
+    if not st.session_state["df_historico"].empty:
+        hist = st.session_state["df_historico"]
+        st.markdown(f"📊 **Histórico acumulado:** {len(hist):,} filas · "
+                    f"{len(st.session_state['archivos_cargados'])} archivo(s)")
+        if st.session_state["archivos_cargados"]:
+            with st.expander("Ver archivos cargados"):
+                for i, f in enumerate(st.session_state["archivos_cargados"], 1):
+                    st.caption(f"{i}. {f}")
+        if st.button("🗑️ Limpiar histórico y empezar de cero", type="secondary"):
+            st.session_state["df_historico"] = pd.DataFrame()
+            st.session_state["archivos_cargados"] = []
+            st.rerun()
+    else:
+        # Fallback: intentar cargar treble.csv local
+        try:
+            acumular_csv("treble.csv")
+            st.session_state["archivos_cargados"] = ["treble.csv (local)"]
+        except Exception:
+            st.warning("Sube al menos un CSV de Treble para comenzar.")
+            st.stop()
+
+    # Procesar el histórico acumulado
+    if st.session_state["df_historico"].empty:
+        st.warning("Sube al menos un CSV de Treble para comenzar.")
+        st.stop()
+
     try:
-        df_raw = load_data(source)
-    except Exception:
-        st.warning("Sube **treble.csv** para comenzar.")
+        df_raw = load_data(io.StringIO(
+            st.session_state["df_historico"].to_csv(index=False)))
+    except Exception as e:
+        st.error(f"Error procesando datos: {e}")
         st.stop()
 
     st.divider()
@@ -409,6 +501,21 @@ if labs:
     df = df[df["labels"].fillna("").str.contains(pat, case=False)]
 if not outliers_on:
     df = df[~df["dur_outlier"].fillna(False)]
+
+# ── Aplicar ajustes de calificación ─────────────────────────
+# Los chats marcados como "excluir" en la pestaña de ajustes
+# tienen su rating_num puesto a NaN para que no entren en promedios.
+# La columna "rating_ajustado" indica si fue modificado.
+df = df.copy()
+df["rating_original"] = df["rating_num"].copy()
+df["rating_ajustado"] = False
+ajustes = st.session_state.get("ajustes_rating", {})
+if ajustes:
+    for chat_id, info in ajustes.items():
+        if info.get("excluir"):
+            mask = df["chat_id"] == chat_id
+            df.loc[mask, "rating_num"] = np.nan
+            df.loc[mask, "rating_ajustado"] = True
 if df.empty:
     st.warning("No hay datos para los filtros seleccionados.")
     st.stop()
@@ -466,7 +573,7 @@ prom_altas = df.loc[df["rating_num"] >= 4, "rating_num"].mean()
 # ══════════════════════════════════════════════════════════════
 #  TABS
 # ══════════════════════════════════════════════════════════════
-(t1, t2, t3, t4, t5, t6, t7, t8, t9) = st.tabs([
+(t1, t2, t3, t4, t5, t6, t7, t8, t9, t_aj) = st.tabs([
     "🏠 Resumen Ejecutivo",
     "⭐ Calificación",
     "🚨 Cancelaciones & Churn",
@@ -476,6 +583,7 @@ prom_altas = df.loc[df["rating_num"] >= 4, "rating_num"].mean()
     "📞 Clientes que más llaman",
     "📋 Explorador de Chats",
     "💡 Insights & Recomendaciones",
+    "⚙️ Ajuste de Calificaciones",
 ])
 
 
@@ -1548,6 +1656,168 @@ with t9:
     st.dataframe(rm_df, use_container_width=True, hide_index=True)
     st.download_button("⬇️ Descargar hoja de ruta (.csv)",
                        rm_df.to_csv(index=False).encode(), "hoja_de_ruta.csv","text/csv")
+
+# ╔════════════════════════════════════════════════════════════╗
+#  TAB 10 — AJUSTE DE CALIFICACIONES
+# ╚════════════════════════════════════════════════════════════╝
+with t_aj:
+    st.markdown('<div class="sec">⚙️ Ajuste de Calificaciones</div>',
+                unsafe_allow_html=True)
+    st.markdown(
+        '<div class="info">'
+        '<b>¿Para qué sirve esta pestaña?</b><br>'
+        'A veces un cliente califica bajo no por el trabajo del agente, sino porque: '
+        'respondió "1" sin querer a una pregunta del bot, tuvo un problema con la plataforma, '
+        'o su insatisfacción es con el servicio en general y no con la atención. '
+        '<br><br>'
+        'Aquí puedes <b>excluir esas calificaciones del promedio</b> registrando el motivo. '
+        'Los chats excluidos <b>no se borran</b> — solo se sacan del cálculo del rating. '
+        'El cambio persiste mientras no recargues la página. '
+        'Puedes descargarlo en CSV para llevar un registro histórico.'
+        '</div>', unsafe_allow_html=True)
+
+    n_ajustes = sum(1 for v in st.session_state["ajustes_rating"].values() if v.get("excluir"))
+    n_ajust_mes = int(df["rating_ajustado"].sum()) if "rating_ajustado" in df.columns else 0
+
+    st.markdown('<div class="kpi-grid">' +
+        kpi("Ajustes activos (sesión)", f"{n_ajustes}",
+            "calificaciones excluidas del promedio", kind="amber") +
+        kpi("Afectan al período actual", f"{n_ajust_mes}",
+            "chats excluidos en el rango de fechas filtrado", kind="amber") +
+        kpi("Rating sin ajustes", f"{df['rating_original'].mean():.3f}",
+            "promedio bruto del CSV", kind="dark") +
+        kpi("Rating con ajustes", f"{df['rating_num'].mean():.3f}",
+            "promedio tras excluir calificaciones erróneas",
+            kind="ok" if df["rating_num"].mean() >= META_RATING else "amber") +
+        '</div>', unsafe_allow_html=True)
+
+    st.divider()
+
+    # ── Buscador de chats para excluir ──────────────────────
+    st.subheader("🔍 Buscar chat para ajustar su calificación")
+    st.caption("Filtra los chats calificados. Cuando encuentres el que quieres excluir, "
+               "marca el checkbox y escribe el motivo.")
+
+    aj1, aj2, aj3 = st.columns(3)
+    busq_tel   = aj1.text_input("Teléfono del cliente", "", key="aj_tel")
+    busq_agent = aj2.text_input("Agente", "", key="aj_agent")
+    busq_rating= aj3.selectbox("Calificación", ["Todas","1","2","3","4","5"], key="aj_rating")
+
+    # Construir tabla de chats calificados
+    df_cal_aj = df[df["rating_original"].notna()].copy()
+    df_cal_aj["rating_original"] = df_cal_aj["rating_original"].astype(int)
+    if busq_tel:
+        df_cal_aj = df_cal_aj[df_cal_aj["phone"].fillna("").str.contains(busq_tel)]
+    if busq_agent:
+        df_cal_aj = df_cal_aj[df_cal_aj["agent"].fillna("").str.contains(busq_agent, case=False)]
+    if busq_rating != "Todas":
+        df_cal_aj = df_cal_aj[df_cal_aj["rating_original"] == int(busq_rating)]
+
+    df_cal_aj = df_cal_aj.sort_values("created_at", ascending=False).head(100)
+
+    if df_cal_aj.empty:
+        st.info("No hay chats calificados que coincidan con los filtros.")
+    else:
+        st.caption(f"Mostrando {len(df_cal_aj)} chats calificados (máx. 100). "
+                   f"Marca los que quieres excluir del promedio.")
+
+        # Mostrar cada chat con un checkbox
+        for _, row in df_cal_aj.iterrows():
+            chat_id = row["chat_id"]
+            ya_excluido = st.session_state["ajustes_rating"].get(chat_id, {}).get("excluir", False)
+            motivo_prev = st.session_state["ajustes_rating"].get(chat_id, {}).get("motivo", "")
+            conf_prev   = st.session_state["ajustes_rating"].get(chat_id, {}).get("confirmado_por", "")
+
+            with st.expander(
+                f"{'🚫' if ya_excluido else '⭐'} "
+                f"{int(row['rating_original'])}★ · "
+                f"{str(row.get('contact','–'))[:25]} · "
+                f"{row.get('agent','–').split('@')[0]} · "
+                f"{str(row.get('created_at',''))[:10]} · "
+                f"{str(row.get('labels','Sin etiqueta'))[:40]}",
+                expanded=ya_excluido):
+
+                c_left, c_right = st.columns([2, 1])
+                with c_left:
+                    st.caption(f"📞 {row.get('phone','–')} · "
+                               f"🏷️ {row.get('labels','Sin etiqueta')} · "
+                               f"🕐 {str(row.get('created_at',''))[:16]}")
+                    motivo = st.text_input(
+                        "Motivo de exclusión",
+                        value=motivo_prev,
+                        placeholder="Ej: Cliente respondió '1' sin querer al bot",
+                        key=f"motivo_{chat_id}")
+                    conf = st.text_input(
+                        "Confirmado por",
+                        value=conf_prev,
+                        placeholder="Nombre de quien autoriza (ej: Jessica)",
+                        key=f"conf_{chat_id}")
+                with c_right:
+                    excluir = st.checkbox(
+                        "Excluir del promedio",
+                        value=ya_excluido,
+                        key=f"excl_{chat_id}",
+                        help="Al marcar esto, la calificación no entra en el rating del agente ni del equipo")
+                    if excluir and not motivo:
+                        st.warning("Escribe el motivo antes de guardar.")
+                    if st.button("💾 Guardar", key=f"save_{chat_id}"):
+                        if excluir and not motivo:
+                            st.error("El motivo es obligatorio para excluir una calificación.")
+                        else:
+                            st.session_state["ajustes_rating"][chat_id] = {
+                                "excluir":        excluir,
+                                "motivo":         motivo,
+                                "confirmado_por": conf,
+                                "phone":          row.get("phone",""),
+                                "agente":         row.get("agent",""),
+                                "cliente":        str(row.get("contact","")),
+                                "fecha":          str(row.get("created_at",""))[:10],
+                                "rating_original":int(row["rating_original"]),
+                                "labels":         row.get("labels",""),
+                            }
+                            st.rerun()
+
+    st.divider()
+
+    # ── Tabla de todos los ajustes activos ───────────────────
+    st.subheader("📋 Registro de ajustes activos")
+    if st.session_state["ajustes_rating"]:
+        aj_rows = []
+        for cid, info in st.session_state["ajustes_rating"].items():
+            if info.get("excluir"):
+                aj_rows.append({
+                    "Fecha":           info.get("fecha","–"),
+                    "Cliente":         info.get("cliente","–"),
+                    "Teléfono":        info.get("phone","–"),
+                    "Agente":          info.get("agente","–").split("@")[0] if info.get("agente") else "–",
+                    "Rating original": info.get("rating_original","–"),
+                    "Etiqueta":        info.get("labels","–")[:40],
+                    "Motivo exclusión":info.get("motivo","–"),
+                    "Confirmado por":  info.get("confirmado_por","–"),
+                })
+        if aj_rows:
+            aj_df = pd.DataFrame(aj_rows)
+            st.dataframe(aj_df, use_container_width=True, hide_index=True)
+            st.download_button(
+                "⬇️ Descargar registro de ajustes (.csv)",
+                aj_df.to_csv(index=False).encode("utf-8"),
+                "ajustes_calificaciones.csv", "text/csv")
+
+            if st.button("🗑️ Eliminar TODOS los ajustes", type="secondary"):
+                st.session_state["ajustes_rating"] = {}
+                st.rerun()
+        else:
+            st.info("No hay ajustes activos en esta sesión.")
+    else:
+        st.info("Aún no has hecho ningún ajuste en esta sesión. "
+                "Busca un chat arriba y márcalo para excluirlo.")
+
+    st.markdown(
+        '<div class="alrt">⚠️ <b>Importante:</b> Los ajustes se mantienen mientras '
+        'la sesión esté activa. Si recargas la página se pierden. '
+        'Descarga el CSV antes de cerrar para llevar un registro histórico.</div>',
+        unsafe_allow_html=True)
+
 
 # ── Footer ──────────────────────────────────────────────────────────
 st.divider()
