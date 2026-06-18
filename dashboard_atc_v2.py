@@ -683,7 +683,7 @@ def resp_exportar_excel(d: pd.DataFrame, cierres=True):
     return buf.getvalue()
 
 
-(t1, t2, t3, t4, t5, t6, t7, t8, t9, t_aj, t_resp) = st.tabs([
+(t1, t2, t3, t4, t5, t6, t7, t8, t9, t_aj, t_resp, t_esp) = st.tabs([
     "🏠 Resumen Ejecutivo",
     "⭐ Calificación",
     "🚨 Cancelaciones & Churn",
@@ -695,6 +695,7 @@ def resp_exportar_excel(d: pd.DataFrame, cierres=True):
     "💡 Insights & Recomendaciones",
     "⚙️ Ajuste de Calificaciones",
     "📑 Respaldo Excel",
+    "🎓 Especialistas: Calif. bajas",
 ])
 
 
@@ -2008,6 +2009,135 @@ with t_resp:
             except Exception:
                 st.caption("Para habilitar el Excel (.xlsx), añade `openpyxl` "
                            "a requirements.txt. Mientras tanto usa el CSV.")
+
+
+# ╔════════════════════════════════════════════════════════════╗
+#  TAB 12 — ESPECIALISTAS: CALIFICACIONES BAJAS (solicitud de Iva)
+# ╚════════════════════════════════════════════════════════════╝
+with t_esp:
+    st.markdown('<div class="sec amb">🎓 Especialistas · seguimiento de calificaciones bajas</div>',
+                unsafe_allow_html=True)
+    st.markdown(
+        '<div class="info"><b>¿Para qué sirve?</b><br>'
+        'Detecta qué <b>especialistas calificaron bajo</b> y quiénes lo hacen de forma '
+        'repetida, para contactarlos, hacer una encuesta y entender en qué mejorar. '
+        'Incluye una señal clave: especialistas que calificaron bajo y luego '
+        '<b>dejaron de calificar</b> (descontento silencioso = riesgo de fuga).<br>'
+        'Muestra la cola completa ignorando los filtros de fecha del panel.</div>',
+        unsafe_allow_html=True)
+
+    # ── Controles ──────────────────────────────────────────────
+    colas_disp = sorted(df_raw["tag"].dropna().unique()) if "tag" in df_raw.columns else []
+    idx_esp = colas_disp.index("especialistas") if "especialistas" in colas_disp else 0
+    ce1, ce2, ce3 = st.columns([1.3, 1, 1])
+    cola_sel = ce1.selectbox("Cola / equipo", colas_disp, index=idx_esp,
+                             key="esp_cola") if colas_disp else None
+    umbral_lbl = ce2.radio("Considerar “bajo” como",
+                           ["≤ 2 (muy baja)", "≤ 3 (baja)", "≤ 4 (incluye regular)"],
+                           index=1, key="esp_umbral")
+    umbral = {"≤ 2 (muy baja)": 2, "≤ 3 (baja)": 3, "≤ 4 (incluye regular)": 4}[umbral_lbl]
+    dias = ce3.slider("Ventana reciente (días · 0 = todo)", 0, 120, 0, step=15, key="esp_dias")
+
+    # ── Base: cola seleccionada (sin filtros de panel) ─────────
+    e = df_raw.copy()
+    if cola_sel is not None:
+        e = e[e["tag"].fillna("").str.lower() == cola_sel.lower()]
+    if dias > 0:
+        tope = df_raw["created_at"].max()
+        e = e[e["created_at"] >= tope - pd.Timedelta(days=dias)]
+
+    if e.empty:
+        st.warning("No hay chats en esta cola para el rango seleccionado.")
+    else:
+        bajas = e[e["rating_num"] <= umbral].copy()
+        n_baja = len(bajas)
+        esp_baja = bajas["phone"].nunique()
+        peor_rep = (bajas.groupby("phone").size().sort_values(ascending=False))
+        top_nombre, top_n = "—", 0
+        if len(peor_rep):
+            ph_top = peor_rep.index[0]
+            top_n = int(peor_rep.iloc[0])
+            gtop = e[e["phone"] == ph_top]
+            top_nombre = safe_mode(gtop["contact"]) if "contact" in gtop.columns else ph_top
+
+        # ── KPIs ───────────────────────────────────────────────
+        st.markdown('<div class="kpi-grid">' +
+            kpi("Calificaciones bajas", f"{n_baja:,}",
+                f"en cola '{cola_sel}' (rating ≤ {umbral})", kind="warn") +
+            kpi("Especialistas distintos", f"{esp_baja:,}",
+                "personas que calificaron bajo", kind="amber") +
+            kpi("Más bajas (1 especialista)", f"{top_n}",
+                f"{top_nombre}", kind="dark") +
+            kpi("Rating cola", f"{e['rating_num'].mean():.2f}" if e['rating_num'].notna().any() else "—",
+                f"{safe_pct(e['rating_num'].notna().sum(), len(e))}% calificó") +
+            '</div>', unsafe_allow_html=True)
+
+        if n_baja == 0:
+            st.markdown('<div class="good">✅ No hay calificaciones bajas en este rango. '
+                        'Prueba ampliar la ventana o subir el umbral.</div>',
+                        unsafe_allow_html=True)
+        else:
+            # ── TABLA 1: cada calificación baja (la que pidió Iva) ──
+            st.markdown("##### 📋 Calificaciones bajas — detalle (más recientes primero)")
+            t1d = bajas.sort_values("created_at", ascending=False).copy()
+            t1d["Fecha"] = t1d["created_at"].dt.strftime("%Y-%m-%d %H:%M")
+            tab1 = t1d.assign(
+                Especialista=t1d["contact"] if "contact" in t1d.columns else "—",
+                Teléfono=t1d["phone"],
+                Calificación=t1d["rating_num"].astype("Int64"),
+                Etiqueta=t1d["label_ppal"] if "label_ppal" in t1d.columns else "—",
+                Agente=t1d["agent"],
+                Región=t1d["region"] if "region" in t1d.columns else "—",
+            )[["Fecha", "Especialista", "Teléfono", "Calificación",
+               "Etiqueta", "Agente", "Región"]]
+            st.dataframe(tab1, use_container_width=True, hide_index=True, height=340)
+            st.download_button("⬇️ Descargar detalle (.csv)",
+                               tab1.to_csv(index=False).encode("utf-8"),
+                               "especialistas_calif_bajas.csv", "text/csv", key="esp_csv1")
+
+            # ── TABLA 2: resumen por especialista (quién repite + riesgo) ──
+            st.divider()
+            st.markdown("##### 🚩 Resumen por especialista — prioridad de seguimiento")
+            st.caption("Ordenado por nº de bajas. **Riesgo** = su última calificación fue baja, "
+                       "o calificó bajo y después dejó de calificar.")
+            phones_baja = bajas["phone"].unique()
+            res = []
+            for ph in phones_baja:
+                g = e[e["phone"] == ph].sort_values("created_at")
+                rated = g[g["rating_num"].notna()]
+                ult_calif = rated["rating_num"].iloc[-1] if len(rated) else np.nan
+                ult_fecha = rated["created_at"].iloc[-1] if len(rated) else g["created_at"].max()
+                ult_baja_fecha = g[g["rating_num"] <= umbral]["created_at"].max()
+                post = g[g["created_at"] > ult_baja_fecha]
+                dejo = (len(post) > 0) and (post["rating_num"].isna().all())
+                ult_es_baja = (not pd.isna(ult_calif)) and (ult_calif <= umbral)
+                riesgo = ult_es_baja or dejo
+                res.append({
+                    "Especialista":   safe_mode(g["contact"]) if "contact" in g.columns else ph,
+                    "Teléfono":       ph,
+                    "# bajas":        int((g["rating_num"] <= umbral).sum()),
+                    "Peor nota":      int(g["rating_num"].min()),
+                    "Última nota":    "—" if pd.isna(ult_calif) else int(ult_calif),
+                    "Fecha últ. calif.": ult_fecha.strftime("%Y-%m-%d") if pd.notna(ult_fecha) else "—",
+                    "Contactos":      len(g),
+                    "Agente frecuente": safe_mode(g["agent"]),
+                    "⚠️ Riesgo":      "🔴 Sí" if riesgo else "—",
+                    "Dejó de calificar": "Sí" if dejo else "No",
+                })
+            res_df = (pd.DataFrame(res)
+                      .sort_values(["# bajas", "Fecha últ. calif."], ascending=[False, False]))
+            st.dataframe(res_df, use_container_width=True, hide_index=True, height=320)
+            st.download_button("⬇️ Descargar resumen (.csv)",
+                               res_df.to_csv(index=False).encode("utf-8"),
+                               "especialistas_resumen_bajas.csv", "text/csv", key="esp_csv2")
+
+            n_riesgo = (res_df["⚠️ Riesgo"] == "🔴 Sí").sum()
+            st.markdown(
+                f'<div class="invis">🔮 <b>Acción sugerida:</b> {n_riesgo} especialista(s) '
+                f'en riesgo (última nota baja o dejaron de calificar tras una baja). '
+                f'Son los primeros candidatos para una encuesta corta de satisfacción '
+                f'y una llamada de seguimiento del equipo de retención.</div>',
+                unsafe_allow_html=True)
 
 
 # ── Footer ──────────────────────────────────────────────────────────
