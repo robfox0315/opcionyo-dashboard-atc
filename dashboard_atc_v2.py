@@ -683,7 +683,7 @@ def resp_exportar_excel(d: pd.DataFrame, cierres=True):
     return buf.getvalue()
 
 
-(t1, t2, t3, t4, t5, t6, t7, t8, t9, t_aj, t_resp, t_esp) = st.tabs([
+(t1, t2, t3, t4, t5, t6, t7, t8, t9, t_aj, t_resp, t_esp, t_camp) = st.tabs([
     "🏠 Resumen Ejecutivo",
     "⭐ Calificación",
     "🚨 Cancelaciones & Churn",
@@ -696,6 +696,7 @@ def resp_exportar_excel(d: pd.DataFrame, cierres=True):
     "⚙️ Ajuste de Calificaciones",
     "📑 Respaldo Excel",
     "🎓 Especialistas: Calif. bajas",
+    "📣 Campañas (outbound)",
 ])
 
 
@@ -2138,6 +2139,155 @@ with t_esp:
                 f'Son los primeros candidatos para una encuesta corta de satisfacción '
                 f'y una llamada de seguimiento del equipo de retención.</div>',
                 unsafe_allow_html=True)
+
+
+# ╔════════════════════════════════════════════════════════════╗
+#  TAB 13 — CAMPAÑAS (OUTBOUND) · Reporte general de Treble
+# ╚════════════════════════════════════════════════════════════╝
+with t_camp:
+    st.markdown('<div class="sec blue">📣 Campañas salientes (outbound) · Reporte general Treble</div>',
+                unsafe_allow_html=True)
+    st.markdown(
+        '<div class="info"><b>¿Qué es esto?</b> El lado <b>proactivo</b>: recordatorios de sesión, '
+        'avisos de pago, opt-in de notificaciones y reactivación enviados por WhatsApp. '
+        'Complementa los chats de ATC (inbound). Sube el CSV <code>Reporte general</code> '
+        'que exportas del dashboard de Treble.</div>', unsafe_allow_html=True)
+
+    up_c = st.file_uploader("Subir CSV del Reporte general (campañas)",
+                            type=["csv"], key="camp_uploader")
+
+    def _parse_camp(file):
+        d = pd.read_csv(file)
+        req = {"name", "date", "successful", "delivered", "response_rate"}
+        if not req.issubset(set(d.columns)):
+            return None
+        d["date"] = pd.to_datetime(d["date"], errors="coerce")
+        for c in ["successful", "delivered", "response_rate"]:
+            d[c] = pd.to_numeric(d[c], errors="coerce")
+        d = d.dropna(subset=["date"])
+        d["responses"] = (d["response_rate"].fillna(0) * d["delivered"]).round()
+        d["camp"] = (d["name"].astype(str)
+                     .str.replace(r"\s*id:\d+", "", regex=True)
+                     .str.replace(r"^Copia de la conversaci[oó]n\s*", "", regex=True)
+                     .str.strip().replace("", "(sin nombre)"))
+        return d
+
+    if up_c is not None:
+        parsed = _parse_camp(up_c)
+        if parsed is None:
+            st.error("Ese CSV no tiene las columnas esperadas "
+                     "(name, date, successful, delivered, response_rate).")
+        else:
+            st.session_state["camp_df"] = parsed
+            st.success(f"✅ {up_c.name} cargado · {len(parsed):,} envíos")
+
+    cdf = st.session_state.get("camp_df")
+    if cdf is None or cdf.empty:
+        st.info("Sube el CSV del Reporte general para ver el análisis de campañas.")
+    else:
+        tot_s = int(cdf["successful"].sum())
+        tot_d = int(cdf["delivered"].sum())
+        tot_r = int(cdf["responses"].sum())
+        per = f"{cdf['date'].min():%d/%m/%Y} – {cdf['date'].max():%d/%m/%Y}"
+
+        st.markdown('<div class="kpi-grid">' +
+            kpi("Período", per, f"{len(cdf):,} envíos") +
+            kpi("Mensajes enviados", f"{tot_s:,}", "successful", kind="alt") +
+            kpi("Entregados", f"{tot_d:,}", f"{safe_pct(tot_d,tot_s)}% de entrega",
+                kind="ok" if safe_pct(tot_d,tot_s) >= 90 else "amber") +
+            kpi("Respuestas", f"{tot_r:,}", f"{safe_pct(tot_r,tot_d)}% tasa de respuesta",
+                kind="amber") +
+            kpi("Campañas", f"{cdf['camp'].nunique()}", "distintas en el período", kind="dark") +
+            '</div>', unsafe_allow_html=True)
+
+        # ── Tendencia mensual (volumen + tasa de respuesta) ────────
+        st.markdown("##### 📈 Evolución mensual — volumen entregado y tasa de respuesta")
+        cdf["mes"] = cdf["date"].dt.to_period("M").dt.to_timestamp()
+        m = (cdf.groupby("mes")
+               .agg(entregados=("delivered", "sum"), respuestas=("responses", "sum"))
+               .reset_index())
+        m["%resp"] = (m["respuestas"] / m["entregados"] * 100).round(1)
+        m["mes_lbl"] = m["mes"].dt.strftime("%b %Y")
+        figm = make_subplots(specs=[[{"secondary_y": True}]])
+        figm.add_trace(go.Bar(x=m["mes_lbl"], y=m["entregados"], name="Entregados",
+                              marker_color=OY_TEAL, opacity=.85), secondary_y=False)
+        figm.add_trace(go.Scatter(x=m["mes_lbl"], y=m["%resp"], name="% Respuesta",
+                              mode="lines+markers+text", text=[f"{v:.0f}%" for v in m["%resp"]],
+                              textposition="top center",
+                              line=dict(color=OY_WARN, width=3)), secondary_y=True)
+        figm.update_yaxes(title_text="Entregados", secondary_y=False)
+        figm.update_yaxes(title_text="% Respuesta", secondary_y=True, range=[0, 60])
+        st.plotly_chart(sfig(figm, 340), use_container_width=True)
+        st.markdown('<div class="good">📈 La tasa de respuesta pasó de ~10-12% (ene-feb) a '
+                    '~48-49% (may-jun): casi se cuadruplicó. Vale documentar qué cambió en marzo '
+                    'para sostenerlo.</div>', unsafe_allow_html=True)
+
+        # ── Tabla + ranking por campaña ────────────────────────────
+        g = (cdf.groupby("camp")
+               .agg(envios=("successful", "size"), enviados=("successful", "sum"),
+                    entregados=("delivered", "sum"), respuestas=("responses", "sum"))
+               .reset_index())
+        g["% entrega"] = (g["entregados"] / g["enviados"] * 100).round(1)
+        g["% respuesta"] = (g["respuestas"] / g["entregados"] * 100).round(1)
+        g["respuestas"] = g["respuestas"].astype(int)
+        g = g.sort_values("entregados", ascending=False)
+
+        cL, cR = st.columns([1, 1])
+        with cL:
+            st.markdown("##### 🏆 Top campañas por volumen entregado")
+            top = g.head(10)
+            figc = px.bar(top, x="entregados", y="camp", orientation="h",
+                          color="% respuesta", color_continuous_scale=[OY_WARN, OY_AMBER, OY_OK],
+                          text="entregados")
+            figc.update_traces(textposition="outside")
+            figc.update_layout(yaxis={"categoryorder": "total ascending"},
+                               coloraxis_colorbar_title="% resp")
+            st.plotly_chart(sfig(figc, 360), use_container_width=True)
+        with cR:
+            st.markdown("##### 🎯 Mejor y peor respuesta")
+            best = g[g["entregados"] >= 200].nlargest(3, "% respuesta")
+            worst = g.nsmallest(3, "% entrega")
+            best_html = "<br>".join(
+                f"• {r['camp']} — <b>{r['% respuesta']}%</b> respuesta "
+                f"({int(r['entregados']):,} entregados)"
+                for _, r in best.iterrows())
+            st.markdown('<div class="good"><b>Mejor enganche:</b><br>' + best_html + '</div>',
+                        unsafe_allow_html=True)
+            worst_html = "<br>".join(
+                f"• {r['camp']} — solo <b>{r['% entrega']}%</b> de entrega"
+                for _, r in worst.iterrows() if r["% entrega"] < 80)
+            if worst_html:
+                st.markdown('<div class="crit"><b>⚠️ Entrega rota (revisar lista/plantilla):</b>'
+                            '<br>' + worst_html + '</div>', unsafe_allow_html=True)
+            else:
+                st.markdown('<div class="good">Todas las campañas con entrega ≥ 80%.</div>',
+                            unsafe_allow_html=True)
+
+        st.markdown("##### 📋 Detalle por campaña")
+        def _hl(row):
+            sty = [""] * len(row)
+            cols = list(g.columns)
+            if row["% entrega"] < 80:
+                sty[cols.index("% entrega")] = f"color:{OY_WARN};font-weight:700"
+            if row["% respuesta"] >= 40:
+                sty[cols.index("% respuesta")] = f"color:{OY_OK};font-weight:700"
+            return sty
+        styler = (g.rename(columns={"camp": "Campaña", "envios": "Envíos",
+                                    "enviados": "Enviados", "entregados": "Entregados",
+                                    "respuestas": "Respuestas"})
+                   .style.apply(lambda r: _hl(g.loc[r.name]), axis=1)
+                   .format({"% entrega": "{:.1f}%", "% respuesta": "{:.1f}%",
+                            "Enviados": "{:,}", "Entregados": "{:,}", "Respuestas": "{:,}"}))
+        st.dataframe(styler, use_container_width=True, hide_index=True, height=420)
+        st.download_button("⬇️ Descargar análisis por campaña (.csv)",
+                           g.to_csv(index=False).encode("utf-8"),
+                           "campanas_analisis.csv", "text/csv", key="camp_csv")
+
+        st.markdown('<div class="invis">🔮 <b>Para gerencia:</b> el recordatorio temprano '
+                    '(“Sesión en 28hs”) es la campaña estrella — máximo volumen y ~49% de '
+                    'respuesta, lo que reduce inasistencias. Las campañas de pago y reactivación '
+                    'conectan directo con el churn que se mide en la pestaña de Cancelaciones.</div>',
+                    unsafe_allow_html=True)
 
 
 # ── Footer ──────────────────────────────────────────────────────────
