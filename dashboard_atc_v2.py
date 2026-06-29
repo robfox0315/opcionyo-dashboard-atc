@@ -14,6 +14,9 @@ import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import io
+import base64
+import requests
+from datetime import datetime
 
 # ══════════════════════════════════════════════════════════════
 #  CONFIGURACIÓN
@@ -358,6 +361,78 @@ def top_clientes(data: pd.DataFrame, n: int = 15) -> pd.DataFrame:
 
 
 # ══════════════════════════════════════════════════════════════
+#  ALMACENAMIENTO PERSISTENTE COMPARTIDO (GitHub)
+#  Hace que el histórico de treble se guarde y lo vea TODO el mundo,
+#  no solo la sesión actual. Si no hay token configurado, el dashboard
+#  funciona igual que antes (modo sesión), sin romperse.
+#
+#  Configuración en Streamlit → Settings → Secrets:
+#     [github]
+#     token  = "github_pat_xxx"        # PAT con Contents: Read/Write
+#     repo   = "robfox0315/opcionyo-data"
+#     path   = "treble_historico.csv"  # opcional
+#     branch = "main"                  # opcional
+# ══════════════════════════════════════════════════════════════
+_GH = dict(st.secrets.get("github", {})) if hasattr(st, "secrets") else {}
+PERSIST = bool(_GH.get("token") and _GH.get("repo"))
+_GH_PATH   = _GH.get("path", "treble_historico.csv")
+_GH_BRANCH = _GH.get("branch", "main")
+
+def _gh_url():
+    return f"https://api.github.com/repos/{_GH['repo']}/contents/{_GH_PATH}"
+
+def _gh_headers():
+    return {"Authorization": f"token {_GH['token']}",
+            "Accept": "application/vnd.github+json"}
+
+@st.cache_data(ttl=60, show_spinner=False)
+def gh_load_df():
+    """Lee el histórico compartido desde GitHub (vacío si no existe)."""
+    if not PERSIST:
+        return pd.DataFrame()
+    try:
+        r = requests.get(_gh_url(), headers=_gh_headers(),
+                         params={"ref": _GH_BRANCH}, timeout=20)
+        if r.status_code == 404:
+            return pd.DataFrame()
+        r.raise_for_status()
+        content = base64.b64decode(r.json()["content"])
+        return pd.read_csv(io.BytesIO(content), dtype=str)
+    except Exception:
+        return pd.DataFrame()
+
+def _gh_sha():
+    try:
+        r = requests.get(_gh_url(), headers=_gh_headers(),
+                         params={"ref": _GH_BRANCH}, timeout=20)
+        return r.json().get("sha") if r.status_code == 200 else None
+    except Exception:
+        return None
+
+def gh_save_df(df: pd.DataFrame) -> bool:
+    """Guarda (sobrescribe) el histórico compartido en GitHub."""
+    if not PERSIST:
+        return False
+    try:
+        csv_bytes = df.to_csv(index=False).encode("utf-8")
+        payload = {
+            "message": f"Histórico treble · {len(df):,} filas · {datetime.now():%Y-%m-%d %H:%M}",
+            "content": base64.b64encode(csv_bytes).decode("ascii"),
+            "branch": _GH_BRANCH,
+        }
+        sha = _gh_sha()
+        if sha:
+            payload["sha"] = sha
+        r = requests.put(_gh_url(), headers=_gh_headers(), json=payload, timeout=30)
+        r.raise_for_status()
+        gh_load_df.clear()
+        return True
+    except Exception as e:
+        st.error(f"No se pudo guardar en el almacén compartido: {e}")
+        return False
+
+
+# ══════════════════════════════════════════════════════════════
 #  GESTIÓN DEL HISTÓRICO ACUMULADO
 #  Guarda en session_state un DataFrame maestro que crece
 #  cada vez que se sube un CSV nuevo. Nunca reemplaza — siempre
@@ -371,6 +446,14 @@ if "ajustes_rating" not in st.session_state:
     # dict: {chat_id → {"excluir": True, "motivo": "...", "confirmado_por": "..."}}
     # chat_id = phone + "|" + created_at
     st.session_state["ajustes_rating"] = {}
+
+# Cargar el histórico COMPARTIDO (GitHub) una vez por sesión
+if PERSIST and not st.session_state.get("_persist_loaded"):
+    _base = gh_load_df()
+    if not _base.empty:
+        st.session_state["df_historico"] = _base
+        st.session_state["archivos_cargados"] = ["📡 histórico compartido"]
+    st.session_state["_persist_loaded"] = True
 
 
 def acumular_csv(archivo) -> pd.DataFrame:
@@ -423,6 +506,13 @@ with st.sidebar:
     st.markdown("#### 📂 Fuente de datos")
     st.caption("Sube un CSV nuevo cada semana — se **agrega** al histórico sin borrar lo anterior.")
 
+    # Estado de persistencia
+    if PERSIST:
+        st.caption("📡 **Modo compartido:** lo que subas se guarda y lo ve todo el equipo.")
+    else:
+        st.caption("💾 Modo sesión (privado). Configura el almacén compartido en Secrets "
+                   "para que todos vean el mismo histórico.")
+
     ups = st.file_uploader(
         "Subir CSV de Treble (semanal o completo)",
         type=["csv"],
@@ -433,9 +523,18 @@ with st.sidebar:
         nombre = ups.name
         if nombre not in st.session_state["archivos_cargados"]:
             with st.spinner(f"Acumulando {nombre}…"):
+                antes = len(st.session_state["df_historico"])
                 acumular_csv(ups)
                 st.session_state["archivos_cargados"].append(nombre)
-            st.success(f"✅ {nombre} acumulado")
+                nuevas = len(st.session_state["df_historico"]) - antes
+            if PERSIST and nuevas > 0:
+                with st.spinner("Guardando en el histórico compartido…"):
+                    ok = gh_save_df(st.session_state["df_historico"])
+                st.success(f"✅ {nombre}: +{nuevas:,} filas · "
+                           + ("guardado para todo el equipo 📡" if ok
+                              else "guardado solo en tu sesión"))
+            else:
+                st.success(f"✅ {nombre} acumulado (+{nuevas:,} filas)")
 
     # Mostrar estado del histórico
     if not st.session_state["df_historico"].empty:
@@ -446,17 +545,33 @@ with st.sidebar:
             with st.expander("Ver archivos cargados"):
                 for i, f in enumerate(st.session_state["archivos_cargados"], 1):
                     st.caption(f"{i}. {f}")
-        if st.button("🗑️ Limpiar histórico y empezar de cero", type="secondary"):
-            st.session_state["df_historico"] = pd.DataFrame()
-            st.session_state["archivos_cargados"] = []
-            st.rerun()
+        # Limpiar (en modo compartido afecta a todos → requiere confirmación)
+        if PERSIST:
+            with st.expander("🗑️ Limpiar histórico compartido"):
+                st.caption("⚠️ Esto borra el histórico para **todo el equipo**, no solo tu sesión.")
+                conf = st.checkbox("Entiendo que se borra para todos", key="conf_wipe")
+                if st.button("Borrar histórico compartido", type="secondary", disabled=not conf):
+                    gh_save_df(pd.DataFrame())
+                    st.session_state["df_historico"] = pd.DataFrame()
+                    st.session_state["archivos_cargados"] = []
+                    st.session_state["_persist_loaded"] = False
+                    st.rerun()
+        else:
+            if st.button("🗑️ Limpiar histórico y empezar de cero", type="secondary"):
+                st.session_state["df_historico"] = pd.DataFrame()
+                st.session_state["archivos_cargados"] = []
+                st.rerun()
     else:
-        # Fallback: intentar cargar treble.csv local
-        try:
-            acumular_csv("treble.csv")
-            st.session_state["archivos_cargados"] = ["treble.csv (local)"]
-        except Exception:
-            st.warning("Sube al menos un CSV de Treble para comenzar.")
+        # Fallback: intentar cargar treble.csv local (solo si no hay almacén compartido)
+        if not PERSIST:
+            try:
+                acumular_csv("treble.csv")
+                st.session_state["archivos_cargados"] = ["treble.csv (local)"]
+            except Exception:
+                st.warning("Sube al menos un CSV de Treble para comenzar.")
+                st.stop()
+        else:
+            st.info("Aún no hay histórico compartido. Sube el primer CSV de Treble.")
             st.stop()
 
     # Procesar el histórico acumulado
@@ -594,8 +709,11 @@ RESP_AGENTES = {                       # etiqueta del Excel → nombre real en e
     "Mary Cardenas":    "Mary Cárdenas",
     "Camila Rodriguez": "Camila Rodriguez",
     "Sofia Castro":     "Sofia Castro",
-    "Erika Quiñonez":   "Erika Quinonez",
+    "Eduardo Liendo":   "Eduardo Liendo",     # nuevo
+    "Erika Quiñonez":   "Erika Quinonez",     # retirada (se conserva su histórico)
 }
+RESP_RETIRADOS = {"Erika Quinonez"}            # se muestran solo si tienen datos
+RESP_NUEVOS    = {"Eduardo Liendo"}
 RESP_FILAS = [
     "Chats atendidos",
     "Rating ATC",
@@ -658,15 +776,49 @@ def resp_bloque(g: pd.DataFrame) -> dict:
 
 def resp_tabla(d: pd.DataFrame, agente_real=None, cierres=True) -> pd.DataFrame:
     reales = list(RESP_AGENTES.values())
-    base = d[d["agent"].isin(reales)] if agente_real is None \
-        else d[d["agent"] == agente_real]
+    allag = d[d["agent"].isin(reales)]
+    base = allag if agente_real is None else d[d["agent"] == agente_real]
+    dom_tot = allag.groupby("_domingo").size()      # denominador = todo el equipo
+    mes_tot = allag.groupby("_mes").size()
     cols = {}
     for dom, g in sorted(base.groupby("_domingo"), key=lambda x: x[0]):
-        cols[pd.Timestamp(dom).strftime("%d/%m/%Y")] = resp_bloque(g)
+        b = resp_bloque(g)
+        if agente_real is not None:
+            tot = dom_tot.get(dom, 0)
+            b["% del total (equipo)"] = round(len(g) / tot * 100, 1) if tot else 0
+        cols[pd.Timestamp(dom).strftime("%d/%m/%Y")] = b
     if cierres:
         for per, g in sorted(base.groupby("_mes"), key=lambda x: x[0]):
-            cols[f"Cierre {RESP_MESES[per.month]} {per.year}"] = resp_bloque(g)
-    return pd.DataFrame(cols).reindex(RESP_FILAS)
+            b = resp_bloque(g)
+            if agente_real is not None:
+                tot = mes_tot.get(per, 0)
+                b["% del total (equipo)"] = round(len(g) / tot * 100, 1) if tot else 0
+            cols[f"Cierre {RESP_MESES[per.month]} {per.year}"] = b
+    filas = RESP_FILAS + (["% del total (equipo)"] if agente_real is not None else [])
+    return pd.DataFrame(cols).reindex(filas)
+
+
+def resp_dia_hora_pico(wk: pd.DataFrame):
+    """Matriz día×hora de una semana + indicadores (día/hora con más y menos chats)."""
+    dias_es = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"]
+    w = wk.copy()
+    w["_wd"] = w["_fecha"].dt.weekday
+    w["_h"]  = w["_fecha"].dt.hour
+    piv = (w.pivot_table(index="_wd", columns="_h", values="_fecha",
+                         aggfunc="count", fill_value=0)
+             .reindex(index=range(7), columns=range(24), fill_value=0))
+    z = piv.values
+    por_dia  = piv.sum(axis=1)
+    por_hora = piv.sum(axis=0)
+    ij = np.unravel_index(int(np.argmax(z)), z.shape) if z.size and z.max() > 0 else (0, 0)
+    info = {
+        "dias": dias_es, "z": z,
+        "dia_max":  (dias_es[int(por_dia.idxmax())],  int(por_dia.max())),
+        "dia_min":  (dias_es[int(por_dia.idxmin())],  int(por_dia.min())),
+        "hora_max": (int(por_hora.idxmax()), int(por_hora.max())),
+        "record":   (dias_es[ij[0]], ij[1], int(z[ij]) if z.size else 0),
+    }
+    return info
 
 
 def resp_exportar_excel(d: pd.DataFrame, cierres=True):
@@ -1942,15 +2094,21 @@ with t_resp:
         '<div class="info"><b>¿Para qué sirve?</b><br>'
         'Reproduce exactamente las filas que llenas a mano en la hoja '
         '<b>“AgenteHistorico semanal”</b> del Excel, calculadas desde el treble. '
-        'Sube tu CSV en el panel lateral, elige la semana y copia la columna al Excel.<br>'
-        'Muestra siempre los <b>9 agentes</b> indicados, ignorando los filtros de fecha '
-        'del panel (para que tengas todo el histórico disponible).</div>',
+        'Elige la semana y copia la columna al Excel.<br>'
+        'Muestra al equipo indicado ignorando los filtros de fecha del panel '
+        '(para tener todo el histórico disponible).</div>',
         unsafe_allow_html=True)
+    st.caption("👥 Roster actual: **Eduardo Liendo** es nuevo · **Erika Quiñonez** se retiró "
+               "(se conserva su histórico mientras tenga datos).")
 
     rd = resp_preparar(df_raw)
     reales = list(RESP_AGENTES.values())
     presentes = [a for a in reales if a in set(rd["agent"].unique())]
-    faltan = [etq for etq, real in RESP_AGENTES.items() if real not in presentes]
+    # Mostrar un agente retirado solo si aún tiene datos
+    etqs_show = [etq for etq, real in RESP_AGENTES.items()
+                 if not (real in RESP_RETIRADOS and real not in presentes)]
+    faltan = [etq for etq, real in RESP_AGENTES.items()
+              if real not in presentes and real not in RESP_RETIRADOS]
     if faltan:
         st.markdown('<div class="alrt">Sin datos en este CSV para: '
                     + ", ".join(faltan) + '</div>', unsafe_allow_html=True)
@@ -1959,7 +2117,7 @@ with t_resp:
 
     domingos = sorted(rd[rd["agent"].isin(reales)]["_domingo"].unique())
     if not domingos:
-        st.warning("No hay chats de estos 9 agentes en el histórico cargado.")
+        st.warning("No hay chats de estos agentes en el histórico cargado.")
     else:
         labels_sem = [pd.Timestamp(x).strftime("%d/%m/%Y") for x in domingos]
 
@@ -1969,26 +2127,69 @@ with t_resp:
                            labels_sem, index=len(labels_sem)-1, key="resp_sem")
         objetivo = pd.Timestamp(pd.to_datetime(sem, format="%d/%m/%Y")).normalize()
         sub = rd[rd["_domingo"] == objetivo]
-        cols_sem = {"TOTAL (9 agentes)": resp_bloque(sub[sub["agent"].isin(reales)])}
-        for etq, real in RESP_AGENTES.items():
-            cols_sem[etq] = resp_bloque(sub[sub["agent"] == real])
+
+        cols_sem = {"TOTAL (equipo)": resp_bloque(sub[sub["agent"].isin(reales)])}
+        for etq in etqs_show:
+            cols_sem[etq] = resp_bloque(sub[sub["agent"] == RESP_AGENTES[etq]])
         tab_sem = pd.DataFrame(cols_sem).reindex(RESP_FILAS)
-        st.dataframe(tab_sem, use_container_width=True, height=420)
+        # Fila: % del total del equipo por agente
+        def _ci(v): return v if isinstance(v, (int, float)) and not isinstance(v, bool) else 0
+        tot_chats = _ci(cols_sem["TOTAL (equipo)"]["Chats atendidos"])
+        tab_sem.loc["% del total (equipo)"] = {
+            col: (round(_ci(vals["Chats atendidos"]) / tot_chats * 100, 1) if tot_chats else 0)
+            for col, vals in cols_sem.items()}
+        st.dataframe(tab_sem, use_container_width=True, height=460)
+        st.markdown(
+            f'<div class="good">📊 <b>Chats atendidos esta semana (equipo):</b> '
+            f'{int(tot_chats):,}. La fila <b>“% del total (equipo)”</b> indica cuánto '
+            f'aporta cada agente.</div>', unsafe_allow_html=True)
         st.markdown(
             '<div class="alrt">⚠️ <b>“Tiempo medio interacción” queda en blanco a propósito.</b> '
             'Treble lo calcula a nivel de mensajes y no viene en este CSV — es la única '
-            'celda que debes copiar del panel de Treble. Las otras 9 son automáticas.</div>',
+            'celda que debes copiar del panel de Treble. Las demás son automáticas.</div>',
             unsafe_allow_html=True)
+
+        # ── Día y hora con más chats (heatmap) ─────────────────────
+        st.markdown("##### 📅 Día y hora con más chats — semana seleccionada")
+        st.caption("Sobre TODA la operación (todos los agentes) de la semana elegida. "
+                   "Equivale a las filas de día/hora del Excel y al mapa de calor de Treble.")
+        wk_all = rd[rd["_domingo"] == objetivo]
+        if wk_all.empty:
+            st.info("Sin datos para esta semana.")
+        else:
+            hm = resp_dia_hora_pico(wk_all)
+            st.markdown('<div class="kpi-grid">' +
+                kpi("Día con más chats", hm["dia_max"][0],
+                    f'{hm["dia_max"][1]:,} chats', kind="alt") +
+                kpi("Día con menos chats", hm["dia_min"][0],
+                    f'{hm["dia_min"][1]:,} chats') +
+                kpi("Hora pico", f'{hm["hora_max"][0]:02d}:00',
+                    f'{hm["hora_max"][1]:,} chats', kind="amber") +
+                '</div>', unsafe_allow_html=True)
+            rdia, rhora, rn = hm["record"]
+            st.markdown(
+                f'<div class="good">🏆 <b>Récord de la semana (día y hora con más chats):</b> '
+                f'{rdia} a las {rhora:02d}:00 h con <b>{rn:,}</b> chats — '
+                f'este es el valor para esa fila del Excel.</div>', unsafe_allow_html=True)
+            fig_hm = go.Figure(go.Heatmap(
+                z=hm["z"], x=[f"{h:02d}h" for h in range(24)], y=hm["dias"],
+                colorscale=[[0, "#EAFBFC"], [0.5, OY_TEAL], [1, OY_TEAL_DARK]],
+                text=hm["z"], texttemplate="%{text}", textfont={"size": 9},
+                hovertemplate="%{y} · %{x}: %{z} chats<extra></extra>",
+                colorbar=dict(title="Chats")))
+            fig_hm.update_layout(xaxis_title=None, yaxis_title=None,
+                                 yaxis=dict(autorange="reversed"))
+            st.plotly_chart(sfig(fig_hm, 330), use_container_width=True)
 
         # ── 2) Histórico completo por agente ───────────────────────
         st.divider()
         st.markdown("##### 2️⃣ Histórico completo (todas las semanas y meses)")
-        with st.expander("🟢 TOTALES — los 9 agentes juntos", expanded=True):
+        with st.expander("🟢 TOTALES — todo el equipo junto", expanded=True):
             st.dataframe(resp_tabla(rd, None, cierres_on), use_container_width=True)
-        for etq, real in RESP_AGENTES.items():
-            if real not in presentes:
-                continue
-            with st.expander(f"👤 {etq}"):
+        for etq in etqs_show:
+            real = RESP_AGENTES[etq]
+            tag = " 🆕" if real in RESP_NUEVOS else (" ⏹️ (retirada)" if real in RESP_RETIRADOS else "")
+            with st.expander(f"👤 {etq}{tag}"):
                 st.dataframe(resp_tabla(rd, real, cierres_on), use_container_width=True)
 
         # ── 3) Descargas ───────────────────────────────────────────
