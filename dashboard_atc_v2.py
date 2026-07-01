@@ -672,38 +672,48 @@ with st.sidebar:
     f_ini = rango[0] if len(rango)==2 else fmin
     f_fin = rango[1] if len(rango)==2 else fmax
 
-    ags   = st.multiselect("👤 Agentes", sorted(df_raw["agent"].dropna().unique()), placeholder="Todos")
-
-    # 📂 Cola/Equipo con atajo "Vista Treble"
     opts_cola = sorted(df_raw["tag"].dropna().unique()) if "tag" in df_raw.columns else []
-    if opts_cola and st.button("👁️ Vista Treble", use_container_width=True,
-                               help="Filtra las mismas colas que muestra Treble (SDD + Especialistas + Default)"):
-        st.session_state["f_colas"] = [t for t in ["sdd", "especialistas", "default"] if t in opts_cola]
+
+    # 👁️ VISTA TREBLE — deja el estado 100% comparable con Treble de un clic
+    if opts_cola and st.button("👁️ Vista Treble (número oficial)", use_container_width=True,
+                               help="Activa las 3 colas de Treble (SDD+Especialistas+Default) "
+                                    "y limpia los demás filtros para que el conteo cuadre."):
+        st.session_state["f_colas"] = [t for t in ["sdd","especialistas","default"] if t in opts_cola]
+        st.session_state["f_ags"]   = []
+        st.session_state["f_regs"]  = []
+        st.session_state["f_labs"]  = []
+        st.session_state["f_ests"]  = []
         st.rerun()
+
+    ags   = st.multiselect("👤 Agentes", sorted(df_raw["agent"].dropna().unique()),
+                           placeholder="Todos", key="f_ags")
     colas = st.multiselect("📂 Cola/Equipo", opts_cola, placeholder="Todas",
                            key="f_colas") if opts_cola else []
     with st.expander("💡 ¿Por qué a veces no cuadra con Treble?"):
         st.markdown(
             "- **“Chats atendidos”** cuenta los chats que un **agente respondió** "
-            "(igual que Treble), no los que solo entraron a la cola sin respuesta.\n"
-            "- Para comparar contra una pantalla de Treble, selecciona aquí las **mismas "
-            "colas** que tengas allá — o usa el botón **👁️ Vista Treble**.\n"
-            "- Puede quedar una diferencia mínima (**menos del 0.2%**) por chats "
-            "transferidos entre agentes justo en el cambio de día. Es normal entre dos "
-            "sistemas y no afecta las conclusiones.")
+            "(igual que Treble).\n"
+            "- El botón **👁️ Vista Treble** deja todo listo para comparar: activa las 3 colas "
+            "y limpia los demás filtros.\n"
+            "- El toggle de outliers **no** afecta el conteo, solo el promedio de duración.\n"
+            "- Puede quedar una diferencia mínima (**< 0.2%**) por transferencias en el cambio "
+            "de día. Es normal entre dos sistemas.")
 
-    regs  = st.multiselect("🌎 Región", sorted(df_raw["region"].dropna().unique()), placeholder="Todas")
+    regs  = st.multiselect("🌎 Región", sorted(df_raw["region"].dropna().unique()),
+                           placeholder="Todas", key="f_regs")
     all_lbl = sorted({l.strip() for lst in df_raw["labels"].dropna() for l in lst.split(",") if l.strip()})
-    labs  = st.multiselect("🏷️ Etiquetas", all_lbl, placeholder="Todas")
-    ests  = st.multiselect("🔖 Estado", sorted(df_raw["status"].dropna().unique()), placeholder="Todos")
+    labs  = st.multiselect("🏷️ Etiquetas", all_lbl, placeholder="Todas", key="f_labs")
+    ests  = st.multiselect("🔖 Estado", sorted(df_raw["status"].dropna().unique()),
+                           placeholder="Todos", key="f_ests")
 
     st.divider()
     gran = st.radio("Evolución por", ["Día","Semana","Mes"], index=1, horizontal=True)
     gc   = {"Día":"fecha","Semana":"semana","Mes":"mes"}[gran]
-    outliers_on = st.toggle("Incluir outliers duración >5h", value=False)
+    dur_excl_out = st.toggle("Excluir outliers >5h del promedio de duración", value=True,
+                             help="Solo afecta el PROMEDIO de duración. NO cambia el conteo de chats.")
     st.caption(f"Metas: Calif≥{META_RATING} · TPR≤{META_TPR}min · SLA2≥{META_SLA2}% · Churn≤{META_CHURN}%")
 
-# ── Aplicar filtros ──────────────────────────────────────────
+# ── Aplicar filtros (el outlier YA NO afecta el conteo) ──────
 df = df_raw.copy()
 df = df[(df["created_at"].dt.date >= f_ini) & (df["created_at"].dt.date <= f_fin)]
 if ags:   df = df[df["agent"].isin(ags)]
@@ -713,8 +723,15 @@ if ests:  df = df[df["status"].isin(ests)]
 if labs:
     pat = "|".join(l.replace("+","\\+").replace(".","\\+") for l in labs)
     df = df[df["labels"].fillna("").str.contains(pat, case=False)]
-if not outliers_on:
-    df = df[~df["dur_outlier"].fillna(False)]
+
+# ── A. Banner: avisa si hay filtros que reducen el conteo vs Treble ──
+_filtros_activos = [n for n, v in [("Agentes", ags), ("Región", regs),
+                                   ("Etiquetas", labs), ("Estado", ests)] if v]
+if _filtros_activos:
+    st.warning("⚠️ Estás viendo datos **filtrados** por: " + ", ".join(_filtros_activos) +
+               ". El conteo será menor al total real. Para el **número oficial comparable "
+               "con Treble**, pulsa **👁️ Vista Treble** en el panel izquierdo.")
+
 
 # ── Aplicar ajustes de calificación ─────────────────────────
 # Los chats marcados como "excluir" en la pestaña de ajustes
@@ -1817,8 +1834,10 @@ with t8:
 
     st.markdown('<div class="kpi-grid">' +
         kpi("Handle time real (mediana)", fmt_min(hnd_med), "primer→último mensaje activo", kind="alt") +
-        kpi("Duración promedio (CSV)", fmt_min(df["dur_min"].mean()),
-            "incluye tiempo post-cierre manual", kind="dark") +
+        kpi("Duración promedio (CSV)",
+            fmt_min((df.loc[~df["dur_outlier"].fillna(False), "dur_min"] if dur_excl_out
+                     else df["dur_min"]).mean()),
+            "sin outliers >5h" if dur_excl_out else "incluye outliers >5h", kind="dark") +
         kpi("Chats fantasma", f"{n_ghost:,}", f"{pct_ghost}% sin respuesta final del agente",
             kind="warn" if pct_ghost > META_GHOST else "amber") +
         '</div>', unsafe_allow_html=True)
