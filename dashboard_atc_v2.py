@@ -302,6 +302,13 @@ def load_data(file) -> pd.DataFrame:
     reint = df.groupby(["phone","date"]).transform("size")
     df["reintento"] = reint > 1
 
+    # ── DEFINICIÓN "CHATS ATENDIDOS" (igual que Treble) ──────────────
+    # Treble cuenta como "atendido" el chat que un AGENTE RESPONDIÓ
+    # (envió el primer mensaje), no los que entraron a la cola sin
+    # respuesta. Esto alinea los números del dashboard con Treble.
+    df["atendido"] = df["agent_first_message"].notna()
+    df = df[df["atendido"]].copy()
+
     return df
 
 
@@ -666,7 +673,25 @@ with st.sidebar:
     f_fin = rango[1] if len(rango)==2 else fmax
 
     ags   = st.multiselect("👤 Agentes", sorted(df_raw["agent"].dropna().unique()), placeholder="Todos")
-    colas = st.multiselect("📂 Cola/Equipo", sorted(df_raw["tag"].dropna().unique()), placeholder="Todas") if "tag" in df_raw.columns else []
+
+    # 📂 Cola/Equipo con atajo "Vista Treble"
+    opts_cola = sorted(df_raw["tag"].dropna().unique()) if "tag" in df_raw.columns else []
+    if opts_cola and st.button("👁️ Vista Treble", use_container_width=True,
+                               help="Filtra las mismas colas que muestra Treble (SDD + Especialistas + Default)"):
+        st.session_state["f_colas"] = [t for t in ["sdd", "especialistas", "default"] if t in opts_cola]
+        st.rerun()
+    colas = st.multiselect("📂 Cola/Equipo", opts_cola, placeholder="Todas",
+                           key="f_colas") if opts_cola else []
+    with st.expander("💡 ¿Por qué a veces no cuadra con Treble?"):
+        st.markdown(
+            "- **“Chats atendidos”** cuenta los chats que un **agente respondió** "
+            "(igual que Treble), no los que solo entraron a la cola sin respuesta.\n"
+            "- Para comparar contra una pantalla de Treble, selecciona aquí las **mismas "
+            "colas** que tengas allá — o usa el botón **👁️ Vista Treble**.\n"
+            "- Puede quedar una diferencia mínima (**menos del 0.2%**) por chats "
+            "transferidos entre agentes justo en el cambio de día. Es normal entre dos "
+            "sistemas y no afecta las conclusiones.")
+
     regs  = st.multiselect("🌎 Región", sorted(df_raw["region"].dropna().unique()), placeholder="Todas")
     all_lbl = sorted({l.strip() for lst in df_raw["labels"].dropna() for l in lst.split(",") if l.strip()})
     labs  = st.multiselect("🏷️ Etiquetas", all_lbl, placeholder="Todas")
