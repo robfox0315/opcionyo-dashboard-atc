@@ -14,6 +14,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import io
+import os
 import base64
 import requests
 from datetime import datetime
@@ -378,6 +379,10 @@ PERSIST = bool(_GH.get("token") and _GH.get("repo"))
 _GH_PATH   = _GH.get("path", "treble_historico.csv")
 _GH_BRANCH = _GH.get("branch", "main")
 
+# Archivo de datos PRECARGADO en el repo (para que el equipo vea la data sin subir nada).
+# Roberto lo actualiza reemplazando este CSV en GitHub.
+DATA_FILE = "treble_historico.csv"
+
 def _gh_url():
     return f"https://api.github.com/repos/{_GH['repo']}/contents/{_GH_PATH}"
 
@@ -456,12 +461,50 @@ if PERSIST and not st.session_state.get("_persist_loaded"):
     st.session_state["_persist_loaded"] = True
 
 
+def _leer_csv_robusto(archivo) -> pd.DataFrame:
+    """Lee un CSV tolerando BOM, encoding y separadores raros (; \\t |)."""
+    def _try(enc, sep):
+        if hasattr(archivo, "seek"):
+            archivo.seek(0)
+        return pd.read_csv(archivo, dtype=str, encoding=enc, sep=sep,
+                           engine="python" if sep is None else "c")
+    d = None
+    for enc in ("utf-8-sig", "latin-1"):
+        try:
+            d = _try(enc, ",")
+            break
+        except Exception:
+            continue
+    if d is None:
+        d = _try("utf-8-sig", None)          # autodetección
+    # Limpiar BOM/espacios en nombres de columna
+    d.columns = [str(c).replace("\ufeff", "").strip() for c in d.columns]
+    # Si quedó en 1 sola columna, el separador no era coma → reintentar
+    if d.shape[1] == 1:
+        for sep in (";", "\t", "|"):
+            try:
+                d2 = _try("utf-8-sig", sep)
+                if d2.shape[1] > 1:
+                    d2.columns = [str(c).replace("\ufeff", "").strip() for c in d2.columns]
+                    return d2
+            except Exception:
+                pass
+    return d
+
+
 def acumular_csv(archivo) -> pd.DataFrame:
     """Carga un CSV y lo acumula al histórico sin duplicar filas."""
     try:
-        nuevo = pd.read_csv(archivo, dtype=str)
+        nuevo = _leer_csv_robusto(archivo)
     except Exception as e:
         st.error(f"No se pudo leer el archivo: {e}")
+        return st.session_state["df_historico"]
+
+    # Validar que sea un export de Treble
+    if "phone" not in nuevo.columns or "created_at" not in nuevo.columns:
+        st.error("⚠️ Este CSV no parece un export de Treble: no encuentro las columnas "
+                 "'phone' y/o 'created_at'. Verifica que subiste el archivo correcto "
+                 "(el reporte de chats de Treble), sin abrirlo/guardarlo en Excel.")
         return st.session_state["df_historico"]
 
     if st.session_state["df_historico"].empty:
@@ -504,20 +547,22 @@ with st.sidebar:
 
     # ── CARGA ACUMULATIVA ────────────────────────────────────
     st.markdown("#### 📂 Fuente de datos")
-    st.caption("Sube un CSV nuevo cada semana — se **agrega** al histórico sin borrar lo anterior.")
+    st.caption("El dashboard ya viene con los datos **precargados** — el equipo no necesita subir nada. "
+               "Subir un CSV es **solo para actualizar** el histórico.")
 
     # Estado de persistencia
     if PERSIST:
         st.caption("📡 **Modo compartido:** lo que subas se guarda y lo ve todo el equipo.")
     else:
-        st.caption("💾 Modo sesión (privado). Configura el almacén compartido en Secrets "
-                   "para que todos vean el mismo histórico.")
+        st.caption("📦 **Datos precargados del repositorio.** Para actualizar: reemplaza "
+                   "`treble_historico.csv` en GitHub, o sube un CSV aquí (solo tu sesión).")
 
     ups = st.file_uploader(
-        "Subir CSV de Treble (semanal o completo)",
+        "Actualizar con CSV de Treble (opcional)",
         type=["csv"],
         key="uploader_csv",
-        help="Puedes subir la semana completa o solo la semana nueva. El dashboard acumula automáticamente.")
+        help="Solo si quieres actualizar el histórico. Puedes subir el treble completo o una "
+             "semana nueva; se acumula sin duplicar. El equipo no necesita hacer esto.")
 
     if ups is not None:
         nombre = ups.name
@@ -539,8 +584,23 @@ with st.sidebar:
     # Mostrar estado del histórico
     if not st.session_state["df_historico"].empty:
         hist = st.session_state["df_historico"]
+        # Diagnóstico rápido: calificadas y rango de fechas
+        _rn = pd.to_numeric(hist.get("rating", pd.Series(dtype=str)).replace("-", np.nan),
+                            errors="coerce")
+        _cal = int(_rn.notna().sum())
+        _fe = pd.to_datetime(hist.get("created_at"), errors="coerce")
+        _rango = (f"{_fe.min():%d/%m/%Y}–{_fe.max():%d/%m/%Y}"
+                  if _fe.notna().any() else "sin fechas")
         st.markdown(f"📊 **Histórico acumulado:** {len(hist):,} filas · "
-                    f"{len(st.session_state['archivos_cargados'])} archivo(s)")
+                    f"{_cal:,} calificadas · {_rango}")
+        if _cal == 0:
+            st.markdown('<div class="crit">⚠️ El archivo cargado <b>no tiene calificaciones '
+                        'reconocibles</b>. Revisa que sea el treble completo de chats y que no '
+                        'se haya abierto/guardado en Excel (eso puede dañar el formato).</div>',
+                        unsafe_allow_html=True)
+        elif len(hist) < 200:
+            st.caption("⚠️ Son muy pocas filas para un treble completo. "
+                       "Si esperabas miles, verifica que subiste el export correcto.")
         if st.session_state["archivos_cargados"]:
             with st.expander("Ver archivos cargados"):
                 for i, f in enumerate(st.session_state["archivos_cargados"], 1):
@@ -562,16 +622,27 @@ with st.sidebar:
                 st.session_state["archivos_cargados"] = []
                 st.rerun()
     else:
-        # Fallback: intentar cargar treble.csv local (solo si no hay almacén compartido)
-        if not PERSIST:
-            try:
-                acumular_csv("treble.csv")
-                st.session_state["archivos_cargados"] = ["treble.csv (local)"]
-            except Exception:
-                st.warning("Sube al menos un CSV de Treble para comenzar.")
-                st.stop()
+        # Sin histórico en sesión → cargar los DATOS PRECARGADOS del repo,
+        # así el equipo ve la data sin subir nada. Roberto la actualiza
+        # reemplazando treble_historico.csv en GitHub.
+        rutas = [DATA_FILE, os.path.join("data", DATA_FILE), "treble.csv"]
+        cargo = False
+        for ruta in rutas:
+            if os.path.exists(ruta):
+                acumular_csv(ruta)
+                if not st.session_state["df_historico"].empty:
+                    st.session_state["archivos_cargados"] = [
+                        f"📦 {os.path.basename(ruta)} (precargado del repo)"]
+                    cargo = True
+                    break
+        if cargo:
+            st.rerun()
+        elif PERSIST:
+            st.info("Aún no hay datos. Sube el primer CSV de Treble.")
+            st.stop()
         else:
-            st.info("Aún no hay histórico compartido. Sube el primer CSV de Treble.")
+            st.warning("No encuentro datos precargados (treble_historico.csv). "
+                       "Sube un CSV de Treble para comenzar.")
             st.stop()
 
     # Procesar el histórico acumulado
@@ -1981,7 +2052,21 @@ with t_aj:
     df_cal_aj = df_cal_aj.sort_values("created_at", ascending=False).head(100)
 
     if df_cal_aj.empty:
-        st.info("No hay chats calificados que coincidan con los filtros.")
+        cal_rango = int(df["rating_original"].notna().sum()) if "rating_original" in df.columns else 0
+        cal_total = int(pd.to_numeric(df_raw.get("rating", pd.Series(dtype=str)).replace("-", np.nan),
+                                      errors="coerce").notna().sum())
+        if busq_tel or busq_agent or busq_rating != "Todas":
+            st.info("No hay chats calificados que coincidan con esos filtros de búsqueda. "
+                    "Prueba borrando el teléfono/agente o poniendo Calificación = Todas.")
+        elif cal_rango == 0 and cal_total > 0:
+            st.warning(f"No hay chats calificados en el **rango de fechas** seleccionado, "
+                       f"pero el histórico completo sí tiene {cal_total:,} calificados. "
+                       f"Amplía el filtro de 📅 Fechas en el panel izquierdo.")
+        elif cal_total == 0:
+            st.error("El histórico cargado no tiene calificaciones reconocibles. "
+                     "Vuelve a subir el treble completo de chats (sin abrirlo en Excel).")
+        else:
+            st.info("No hay chats calificados que coincidan con los filtros.")
     else:
         st.caption(f"Mostrando {len(df_cal_aj)} chats calificados (máx. 100). "
                    f"Marca los que quieres excluir del promedio.")
