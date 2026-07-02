@@ -302,6 +302,20 @@ def load_data(file) -> pd.DataFrame:
     reint = df.groupby(["phone","date"]).transform("size")
     df["reintento"] = reint > 1
 
+    # ── NORMALIZACIÓN DE COLAS (colas creadas con nombre de persona → equipo real) ──
+    # Config errónea en Treble: existen colas con nombre de agente. Se reagrupan
+    # a su equipo real para un análisis por cola/equipo consistente. (Mapeo: Iva)
+    COLA_NORM = {
+        "lau m": "gestor consultoria", "laura m": "gestor consultoria",
+        "lau p": "retención", "laura p": "retención",
+        "lau o": "mantenimiento", "carolina": "mantenimiento",
+        "giselle": "mantenimiento", "carlos": "mantenimiento",
+        "alonso": "retención", "diana": "retención",
+    }
+    if "tag" in df.columns:
+        df["tag"] = df["tag"].apply(
+            lambda t: COLA_NORM.get(str(t).strip().lower(), t) if pd.notna(t) else t)
+
     # ── DEFINICIÓN "CHATS ATENDIDOS" (igual que Treble) ──────────────
     # Treble cuenta como "atendido" el chat que un AGENTE RESPONDIÓ
     # (envió el primer mensaje), no los que entraron a la cola sin
@@ -851,15 +865,15 @@ def _resp_min_to_hms(m) -> str:
 
 
 def resp_preparar(dfr: pd.DataFrame) -> pd.DataFrame:
-    """Usa las columnas ya calculadas por load_data (rating_num, tpr_min, dur_min)."""
+    """Usa las columnas ya calculadas por load_data (rating_num, tpr_min, dur_min).
+    Agrupa por created_at (mismo criterio que el resto del dashboard y Treble)."""
     d = dfr.copy()
-    asg = d["assigned_at"] if "assigned_at" in d.columns else d["created_at"]
-    d["_fecha"] = asg.fillna(d["created_at"])
+    d["_fecha"] = d["created_at"]                     # ← criterio único (Opción A)
     d = d[d["_fecha"].notna()].copy()
     d["_rating"] = d["rating_num"]
     d["_tpr"]    = d["tpr_min"]
     d["_dur"]    = d["dur_min"]
-    wd = d["_fecha"].dt.weekday                      # lun=0 … dom=6
+    wd = d["_fecha"].dt.weekday                       # lun=0 … dom=6
     d["_domingo"] = (d["_fecha"] + pd.to_timedelta(6 - wd, unit="D")).dt.normalize()
     d["_mes"]     = d["_fecha"].dt.to_period("M")
     return d
