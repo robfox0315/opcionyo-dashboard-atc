@@ -513,6 +513,29 @@ def _leer_csv_robusto(archivo) -> pd.DataFrame:
     return d
 
 
+@st.cache_data(show_spinner="⏳ Cargando histórico…")
+def _fusionar_historico(firma):
+    """Fusiona base + updates y deduplica (versión más fresca gana).
+    'firma' = tupla (ruta, mtime); la caché se invalida solo si cambia un archivo."""
+    frames = []
+    for i, (f, _) in enumerate(firma):
+        try:
+            dfx = _leer_csv_robusto(f)
+            if "phone" in dfx.columns and "created_at" in dfx.columns:
+                dfx["_ord"] = i
+                frames.append(dfx)
+        except Exception:
+            pass
+    if not frames:
+        return pd.DataFrame()
+    merged = pd.concat(frames, ignore_index=True)
+    merged["_k"] = merged["phone"].astype(str) + "|" + merged["created_at"].astype(str)
+    merged = (merged.sort_values("_ord")
+                    .drop_duplicates("_k", keep="last")
+                    .drop(columns=["_ord", "_k"]))
+    return merged
+
+
 def acumular_csv(archivo) -> pd.DataFrame:
     """Carga un CSV y lo acumula al histórico sin duplicar filas."""
     try:
@@ -643,7 +666,7 @@ with st.sidebar:
                 st.session_state["archivos_cargados"] = []
                 st.rerun()
     else:
-        # ── AUTO-ACTUALIZACIÓN ────────────────────────────────────────
+        # ── AUTO-ACTUALIZACIÓN (cacheada → arranque instantáneo) ──────
         # Carga el histórico base (treble_historico.csv) + CUALQUIER treble
         # nuevo que dejes en la carpeta 'updates/' del repo. Se fusiona y
         # deduplica solo (gana la versión más fresca → calificaciones tardías).
@@ -657,28 +680,16 @@ with st.sidebar:
         fuentes += sorted(glob.glob("updates/*.csv")) + sorted(glob.glob("data/updates/*.csv"))
         if not fuentes and os.path.exists("treble.csv"):
             fuentes = ["treble.csv"]
+        # firma = (ruta, mtime) → invalida la caché solo si cambia algún archivo
+        firma = tuple((f, os.path.getmtime(f)) for f in fuentes if os.path.exists(f))
 
-        frames = []
-        for i, f in enumerate(fuentes):
-            try:
-                dfx = _leer_csv_robusto(f)
-                if "phone" in dfx.columns and "created_at" in dfx.columns:
-                    dfx["_ord"] = i
-                    frames.append(dfx)
-            except Exception:
-                pass
-
-        if frames:
-            merged = pd.concat(frames, ignore_index=True)
-            merged["_k"] = merged["phone"].astype(str) + "|" + merged["created_at"].astype(str)
-            merged = (merged.sort_values("_ord")
-                            .drop_duplicates("_k", keep="last")   # updates ganan
-                            .drop(columns=["_ord", "_k"]))
-            st.session_state["df_historico"] = merged
-            st.session_state["archivos_cargados"] = [
-                f"📦 {os.path.basename(f)}" for f in fuentes]
-            st.rerun()
-        elif PERSIST:
+        if firma:
+            merged = _fusionar_historico(firma)
+            if not merged.empty:
+                st.session_state["df_historico"] = merged
+                st.session_state["archivos_cargados"] = [f"📦 {os.path.basename(f)}" for f, _ in firma]
+                st.rerun()
+        if PERSIST:
             st.info("Aún no hay datos. Sube el primer CSV de Treble.")
             st.stop()
         else:
@@ -864,6 +875,8 @@ RESP_NUEVOS    = {"Eduardo Liendo"}
 RESP_FILAS = [
     "Chats atendidos",
     "Rating ATC",
+    "# Chats calificados",
+    "% Chats calificados",
     "Porcentaje de chats Rating <4",
     "Porcentaje rating >4",
     "Promedio primera respuesta",
@@ -904,9 +917,12 @@ def resp_bloque(g: pd.DataFrame) -> dict:
     if n == 0:
         return {f: "" for f in RESP_FILAS}
     r, tpr = g["_rating"], g["_tpr"]
+    n_cal = int(r.notna().sum())
     return {
         "Chats atendidos": n,
         "Rating ATC": round(r.mean(), 2) if r.notna().any() else "",
+        "# Chats calificados": n_cal,
+        "% Chats calificados": round(n_cal / n * 100, 2),
         "Porcentaje de chats Rating <4": round((r < 4).sum() / n * 100, 2),
         "Porcentaje rating >4":          round((r > 4).sum() / n * 100, 2),
         "Promedio primera respuesta":    _resp_min_to_hms(tpr.mean()),
@@ -918,6 +934,34 @@ def resp_bloque(g: pd.DataFrame) -> dict:
             round((tpr > 30).sum() / n * 100, 2),
         "Tiempo medio interacción": "",              # ← viene de Treble (no en CSV)
         "Duración promedio": _resp_min_to_hms(g["_dur"].mean()),
+    }
+
+
+_RESP_DIAS = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"]
+
+def resp_picos(sub: pd.DataFrame) -> dict:
+    """Día/hora con más chats (promedio) + récord día-hora. Sirve para semana y mes.
+    'Promedio' = promedio de chats por día-de-semana / por hora entre los días del periodo."""
+    if sub is None or sub.empty:
+        return {"Día con más chats (promedio)": "—",
+                "Horas con más chats (promedio)": "—",
+                "Día y hora con más chats (récord)": "—"}
+    f = sub["_fecha"]
+    # promedio por día de semana (cuenta diaria → promedio por dow)
+    por_dia = sub.groupby([f.dt.dayofweek, f.dt.date]).size().groupby(level=0).mean()
+    dmax = int(por_dia.idxmax())
+    # promedio por hora
+    por_hora = sub.groupby([f.dt.hour, f.dt.date]).size().groupby(level=0).mean()
+    hmax = int(por_hora.idxmax())
+    # récord: celda (fecha, hora) con más chats
+    rec = sub.groupby([f.dt.date, f.dt.hour]).size()
+    (rfecha, rhora), rval = rec.idxmax(), int(rec.max())
+    return {
+        "Día con más chats (promedio)":  f"{_RESP_DIAS[dmax]} ({por_dia.max():.0f})",
+        "Horas con más chats (promedio)": f"{hmax:02d}:00 hrs ({por_hora.max():.0f})",
+        "Día y hora con más chats (récord)":
+            f"{_RESP_DIAS[pd.Timestamp(rfecha).dayofweek]} {rhora:02d}:00 · "
+            f"{pd.Timestamp(rfecha):%d/%m/%Y} ({rval} chats)",
     }
 
 
@@ -2344,6 +2388,41 @@ with t_resp:
                                  yaxis=dict(autorange="reversed"))
             st.plotly_chart(sfig(fig_hm, 330), use_container_width=True)
 
+            # 📋 Cuadro Global copiable (semana seleccionada) — para el Excel
+            _rw = wk_all["_rating"]
+            cuadro_sem = {
+                "Chats atendidos": f"{len(wk_all):,}",
+                "# Chats calificados": f"{int(_rw.notna().sum()):,}",
+                "% Chats calificados": f"{_rw.notna().mean()*100:.2f}%",
+                **resp_picos(wk_all),
+            }
+            st.markdown(f"**📋 Cierre GLOBAL de la semana {sem} — cópialo al Excel:**")
+            st.dataframe(pd.DataFrame(cuadro_sem, index=["Valor"]).T,
+                         use_container_width=True)
+
+        # ── 📅 Cierre GLOBAL por MES (para las columnas 'Cierre' del Excel) ──
+        st.divider()
+        st.markdown("##### 📅 Cierre GLOBAL mensual — día/hora + calificados")
+        st.caption("Toda la operación (todos los agentes), igual que la hoja 'Global' del Excel.")
+        meses_disp = sorted(rd["_mes"].dropna().unique())
+        if meses_disp:
+            mlabels = [f"{RESP_MESES[m.month]} {m.year}" for m in meses_disp]
+            msel = st.selectbox("Mes de cierre", mlabels, index=len(mlabels)-1, key="resp_mes_pico")
+            mper = meses_disp[mlabels.index(msel)]
+            mes_all = rd[rd["_mes"] == mper]
+            _rm = mes_all["_rating"]
+            cuadro_mes = {
+                "Chats atendidos": f"{len(mes_all):,}",
+                "Rating ATC": f"{_rm.mean():.2f}" if _rm.notna().any() else "—",
+                "# Chats calificados": f"{int(_rm.notna().sum()):,}",
+                "% Chats calificados": f"{_rm.notna().mean()*100:.2f}%",
+                **resp_picos(mes_all),
+            }
+            st.markdown(f"**📋 Cierre {msel} (GLOBAL) — cópialo al Excel:**")
+            st.dataframe(pd.DataFrame(cuadro_mes, index=["Valor"]).T,
+                         use_container_width=True)
+
+
         # ── 2) Histórico completo por agente ───────────────────────
         st.divider()
         st.markdown("##### 2️⃣ Histórico completo (todas las semanas y meses)")
@@ -2355,25 +2434,29 @@ with t_resp:
             with st.expander(f"👤 {etq}{tag}"):
                 st.dataframe(resp_tabla(rd, real, cierres_on), use_container_width=True)
 
-        # ── 3) Descargas ───────────────────────────────────────────
+        # ── 3) Descargas (se generan SOLO al pedirlas → no ralentizan) ──
         st.divider()
         st.markdown("##### 3️⃣ Descargar")
         c_dl1, c_dl2 = st.columns(2)
         with c_dl1:
-            csv_tot = resp_tabla(rd, None, cierres_on).to_csv().encode("utf-8")
-            st.download_button("⬇️ Totales (.csv)", csv_tot,
-                               "respaldo_totales.csv", "text/csv", key="resp_csv")
+            if st.button("📄 Generar CSV de totales", key="resp_gen_csv"):
+                st.session_state["resp_csv_data"] = resp_tabla(rd, None, cierres_on).to_csv().encode("utf-8")
+            if st.session_state.get("resp_csv_data") is not None:
+                st.download_button("⬇️ Descargar totales (.csv)", st.session_state["resp_csv_data"],
+                                   "respaldo_totales.csv", "text/csv", key="resp_csv")
         with c_dl2:
-            try:
-                xls = resp_exportar_excel(rd, cierres_on)
+            if st.button("📊 Generar Excel completo", key="resp_gen_xls"):
+                try:
+                    st.session_state["resp_xls_data"] = resp_exportar_excel(rd, cierres_on)
+                except Exception:
+                    st.session_state["resp_xls_data"] = None
+                    st.caption("Para el .xlsx añade `openpyxl` a requirements.txt. Usa el CSV.")
+            if st.session_state.get("resp_xls_data") is not None:
                 st.download_button(
-                    "⬇️ Respaldo completo (.xlsx)", xls,
+                    "⬇️ Descargar respaldo (.xlsx)", st.session_state["resp_xls_data"],
                     "respaldo_historico_semanal.xlsx",
                     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     key="resp_xlsx")
-            except Exception:
-                st.caption("Para habilitar el Excel (.xlsx), añade `openpyxl` "
-                           "a requirements.txt. Mientras tanto usa el CSV.")
 
 
 # ╔════════════════════════════════════════════════════════════╗
