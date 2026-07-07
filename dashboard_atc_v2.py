@@ -643,26 +643,46 @@ with st.sidebar:
                 st.session_state["archivos_cargados"] = []
                 st.rerun()
     else:
-        # Sin histórico en sesión → cargar los DATOS PRECARGADOS del repo,
-        # así el equipo ve la data sin subir nada. Roberto la actualiza
-        # reemplazando treble_historico.csv en GitHub.
-        rutas = [DATA_FILE, os.path.join("data", DATA_FILE), "treble.csv"]
-        cargo = False
-        for ruta in rutas:
+        # ── AUTO-ACTUALIZACIÓN ────────────────────────────────────────
+        # Carga el histórico base (treble_historico.csv) + CUALQUIER treble
+        # nuevo que dejes en la carpeta 'updates/' del repo. Se fusiona y
+        # deduplica solo (gana la versión más fresca → calificaciones tardías).
+        # ▶ Para actualizar: sube el treble nuevo a 'updates/' en GitHub. Nada más.
+        import glob
+        fuentes = []
+        for ruta in [DATA_FILE, os.path.join("data", DATA_FILE)]:
             if os.path.exists(ruta):
-                acumular_csv(ruta)
-                if not st.session_state["df_historico"].empty:
-                    st.session_state["archivos_cargados"] = [
-                        f"📦 {os.path.basename(ruta)} (precargado del repo)"]
-                    cargo = True
-                    break
-        if cargo:
+                fuentes.append(ruta)
+                break
+        fuentes += sorted(glob.glob("updates/*.csv")) + sorted(glob.glob("data/updates/*.csv"))
+        if not fuentes and os.path.exists("treble.csv"):
+            fuentes = ["treble.csv"]
+
+        frames = []
+        for i, f in enumerate(fuentes):
+            try:
+                dfx = _leer_csv_robusto(f)
+                if "phone" in dfx.columns and "created_at" in dfx.columns:
+                    dfx["_ord"] = i
+                    frames.append(dfx)
+            except Exception:
+                pass
+
+        if frames:
+            merged = pd.concat(frames, ignore_index=True)
+            merged["_k"] = merged["phone"].astype(str) + "|" + merged["created_at"].astype(str)
+            merged = (merged.sort_values("_ord")
+                            .drop_duplicates("_k", keep="last")   # updates ganan
+                            .drop(columns=["_ord", "_k"]))
+            st.session_state["df_historico"] = merged
+            st.session_state["archivos_cargados"] = [
+                f"📦 {os.path.basename(f)}" for f in fuentes]
             st.rerun()
         elif PERSIST:
             st.info("Aún no hay datos. Sube el primer CSV de Treble.")
             st.stop()
         else:
-            st.warning("No encuentro datos precargados (treble_historico.csv). "
+            st.warning("No encuentro datos (treble_historico.csv). "
                        "Sube un CSV de Treble para comenzar.")
             st.stop()
 
