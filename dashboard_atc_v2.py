@@ -31,74 +31,101 @@ st.set_page_config(
 
 # ── Paleta corporativa ────────────────────────────────────────
 OY_TEAL      = "#16B6C2"
-OY_TEAL_DARK = "#0E8E99"
-OY_BLUE      = "#2F80ED"
-OY_OK        = "#27AE60"
-OY_WARN      = "#E5484D"
-OY_AMBER     = "#F2A33C"
-OY_INK       = "#16323A"
+OY_TEAL_DARK = "#0E7C86"
+OY_BLUE      = "#3B6FE0"
+OY_OK        = "#0F9D6B"
+OY_WARN      = "#DC2626"
+OY_AMBER     = "#D98A0B"
+OY_INK       = "#0F172A"
 COLOR_SEQ    = [OY_TEAL, OY_BLUE, OY_AMBER, "#7E57C2", "#EC4899",
                 "#26A69A", "#FF7043", "#42A5F5", "#9CCC65", "#5C6BC0"]
 
 # ── CSS ───────────────────────────────────────────────────────
 st.markdown("""
 <style>
-:root{--oy-teal:#16B6C2;--oy-td:#0E8E99;--oy-blue:#2F80ED;
-      --oy-ok:#27AE60;--oy-warn:#E5484D;--oy-amb:#F2A33C;--oy-ink:#16323A;}
-.stApp{background:#fff;}
-.block-container{padding-top:1.5rem;}
-h1,h2,h3{color:var(--oy-td);}
-[data-testid="stMetricValue"]{font-size:1.7rem!important;font-weight:800;color:var(--oy-ink);}
-[data-testid="stMetricLabel"]{font-size:.78rem!important;color:#5a6b72;font-weight:600;}
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
+:root{
+  --oy-teal:#16B6C2; --oy-td:#0E7C86; --oy-blue:#3B6FE0;
+  --oy-ok:#0F9D6B; --oy-warn:#DC2626; --oy-amb:#D98A0B; --oy-purple:#6D4AFF;
+  --ink:#0F172A; --ink-2:#475569; --ink-3:#64748B;
+  --surface:#F6F7F9; --card:#FFFFFF; --line:#E6E9EF;
+}
+html,body,[class*="css"],.stApp,[data-testid="stAppViewContainer"],
+[data-testid="stSidebar"]{font-family:'Inter',-apple-system,'Segoe UI',sans-serif;}
+.stApp{background:var(--surface);}
+.block-container{padding-top:1.3rem;max-width:1440px;}
+h1,h2,h3,h4,h5{color:var(--ink);font-weight:700;letter-spacing:-.012em;}
 
+[data-testid="stMetric"]{background:var(--card);border:1px solid var(--line);
+  border-radius:12px;padding:14px 16px;}
+[data-testid="stMetricValue"]{font-size:1.55rem!important;font-weight:800;color:var(--ink);
+  font-variant-numeric:tabular-nums;letter-spacing:-.02em;}
+[data-testid="stMetricLabel"]{font-size:.72rem!important;color:var(--ink-3);font-weight:600;
+  text-transform:uppercase;letter-spacing:.04em;}
+
+/* Header — sobrio y premium */
 .oy-header{display:flex;align-items:center;gap:18px;
-  background:linear-gradient(100deg,var(--oy-td) 0%,var(--oy-teal) 48%,#27D0DC 100%);
-  padding:20px 28px;border-radius:16px;margin:2px 0 12px;
-  box-shadow:0 8px 22px rgba(22,182,194,.28);overflow:visible;}
-.oy-logo{font-weight:800;font-size:2rem;color:#fff;line-height:1.2;
-  letter-spacing:.4px;white-space:nowrap;padding:2px 18px 2px 0;
-  border-right:2px solid rgba(255,255,255,.4);display:flex;align-items:center;}
-.oy-logo span{color:#0A4750;margin-left:6px;}
+  background:linear-gradient(120deg,#0B5560 0%,var(--oy-td) 55%,#12A2AE 100%);
+  padding:20px 26px;border-radius:14px;margin:0 0 16px;
+  box-shadow:0 1px 0 rgba(255,255,255,.14) inset,0 10px 26px rgba(11,85,96,.20);}
+.oy-logo{font-weight:800;font-size:1.7rem;color:#fff;line-height:1.1;letter-spacing:-.015em;
+  white-space:nowrap;padding-right:18px;border-right:1px solid rgba(255,255,255,.28);
+  display:flex;align-items:center;}
+.oy-logo span{color:#CFF6FA;margin-left:5px;font-weight:600;}
 .oy-htxt{display:flex;flex-direction:column;justify-content:center;}
-.oy-htitle{color:#fff;font-weight:800;font-size:1.14rem;margin:0;line-height:1.3;}
-.oy-hsub{color:#EAFCFE;font-size:.82rem;margin:3px 0 0;line-height:1.2;}
+.oy-htitle{color:#fff;font-weight:700;font-size:1.05rem;margin:0;letter-spacing:-.01em;}
+.oy-hsub{color:#BFEAEF;font-size:.8rem;margin:2px 0 0;font-weight:500;}
 
-.sec{background:var(--oy-teal);color:#fff;padding:.4rem 1rem;
-  border-radius:8px;font-weight:700;margin:.2rem 0 .7rem;
-  font-size:.95rem;display:inline-block;}
-.sec.red{background:var(--oy-warn);}
-.sec.amb{background:var(--oy-amb);}
-.sec.ok{background:var(--oy-ok);}
-.sec.blue{background:var(--oy-blue);}
+/* Section — eyebrow con acento lateral, no píldora de color */
+.sec{background:transparent;color:var(--ink);padding:0 0 0 12px;
+  border-left:4px solid var(--oy-teal);font-weight:700;font-size:1.06rem;
+  margin:10px 0 12px;display:block;letter-spacing:-.01em;line-height:1.25;}
+.sec.red{border-color:var(--oy-warn);}
+.sec.amb{border-color:var(--oy-amb);}
+.sec.ok{border-color:var(--oy-ok);}
+.sec.blue{border-color:var(--oy-blue);}
 
-.kpi-grid{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:8px;}
-.kpi{flex:1;min-width:130px;background:var(--oy-teal);border-radius:12px;
-  padding:11px 13px;color:#fff;box-shadow:0 4px 12px rgba(22,182,194,.20);}
-.kpi.alt{background:var(--oy-blue);}
-.kpi.ok{background:var(--oy-ok);}
-.kpi.warn{background:var(--oy-warn);}
-.kpi.amber{background:var(--oy-amb);}
-.kpi.dark{background:var(--oy-td);}
-.kpi .l{font-size:.7rem;opacity:.9;font-weight:600;text-transform:uppercase;letter-spacing:.4px;}
-.kpi .v{font-size:1.5rem;font-weight:800;margin-top:2px;}
-.kpi .d{font-size:.69rem;opacity:.93;margin-top:2px;}
+/* KPI — tarjetas blancas con acento (look corporativo) */
+.kpi-grid{display:flex;gap:12px;flex-wrap:wrap;margin-bottom:12px;}
+.kpi{flex:1;min-width:148px;background:var(--card);border:1px solid var(--line);
+  border-radius:12px;padding:14px 16px;position:relative;overflow:hidden;
+  box-shadow:0 1px 2px rgba(15,23,42,.04);}
+.kpi::before{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--oy-teal);}
+.kpi.alt::before{background:var(--oy-blue);}
+.kpi.ok::before{background:var(--oy-ok);}
+.kpi.warn::before{background:var(--oy-warn);}
+.kpi.amber::before{background:var(--oy-amb);}
+.kpi.dark::before{background:var(--oy-td);}
+.kpi .l{font-size:.7rem;color:var(--ink-3);font-weight:600;text-transform:uppercase;letter-spacing:.05em;}
+.kpi .v{font-size:1.6rem;font-weight:800;margin-top:3px;color:var(--ink);
+  font-variant-numeric:tabular-nums;letter-spacing:-.02em;line-height:1.12;}
+.kpi.ok .v{color:#0B7A53;} .kpi.warn .v{color:#B91C1C;} .kpi.amber .v{color:#B26D06;}
+.kpi .d{font-size:.72rem;color:var(--ink-3);margin-top:3px;font-weight:500;}
 
-.crit{background:#FDECEA;border-left:5px solid var(--oy-warn);
-  padding:.6rem 1rem;border-radius:6px;margin-bottom:.7rem;color:#7a1f1c;}
-.alrt{background:#FFF6E6;border-left:5px solid var(--oy-amb);
-  padding:.6rem 1rem;border-radius:6px;margin-bottom:.7rem;color:#7a531a;}
-.good{background:#EAF7EF;border-left:5px solid var(--oy-ok);
-  padding:.6rem 1rem;border-radius:6px;margin-bottom:.7rem;color:#1d6b3a;}
-.info{background:#E9F6F8;border-left:5px solid var(--oy-teal);
-  padding:.7rem 1rem;border-radius:6px;margin-bottom:.7rem;color:#0E6873;}
-.invis{background:#F0EAFB;border-left:5px solid #7E57C2;
-  padding:.7rem 1rem;border-radius:6px;margin-bottom:.7rem;color:#4527a0;font-weight:600;}
+/* Avisos — sobrios */
+.crit{background:#FEF2F2;border-left:4px solid var(--oy-warn);padding:.65rem .9rem;
+  border-radius:8px;margin-bottom:.7rem;color:#991B1B;font-size:.9rem;}
+.alrt{background:#FFFBEB;border-left:4px solid var(--oy-amb);padding:.65rem .9rem;
+  border-radius:8px;margin-bottom:.7rem;color:#92660A;font-size:.9rem;}
+.good{background:#F0FDF4;border-left:4px solid var(--oy-ok);padding:.65rem .9rem;
+  border-radius:8px;margin-bottom:.7rem;color:#166534;font-size:.9rem;}
+.info{background:#F0FAFB;border-left:4px solid var(--oy-teal);padding:.7rem .9rem;
+  border-radius:8px;margin-bottom:.7rem;color:#0E5A63;font-size:.9rem;}
+.invis{background:#F5F3FF;border-left:4px solid var(--oy-purple);padding:.7rem .9rem;
+  border-radius:8px;margin-bottom:.7rem;color:#4C36B3;font-weight:500;font-size:.9rem;}
 
-.stTabs [data-baseweb="tab-list"]{gap:3px;flex-wrap:wrap;}
-.stTabs [data-baseweb="tab"]{background:#F1FAFB;border-radius:8px 8px 0 0;
-  padding:5px 10px;font-weight:600;color:var(--oy-td);}
-.stTabs [aria-selected="true"]{background:var(--oy-teal)!important;color:#fff!important;}
+/* Tabs — subrayado limpio, no píldora rellena */
+.stTabs [data-baseweb="tab-list"]{gap:2px;flex-wrap:wrap;border-bottom:1px solid var(--line);}
+.stTabs [data-baseweb="tab"]{background:transparent;border-radius:8px 8px 0 0;
+  padding:8px 13px;font-weight:600;color:var(--ink-3);font-size:.85rem;}
+.stTabs [aria-selected="true"]{color:var(--oy-td)!important;background:transparent!important;
+  border-bottom:2px solid var(--oy-teal)!important;}
+
+[data-testid="stSidebar"]{background:#FFFFFF;border-right:1px solid var(--line);}
+[data-testid="stDataFrame"]{border:1px solid var(--line);border-radius:10px;}
+.stButton>button{border-radius:9px;font-weight:600;border:1px solid var(--line);}
 </style>
+
 """, unsafe_allow_html=True)
 
 
@@ -182,7 +209,7 @@ def kpi(label, value, delta="", kind=""):
 
 def sfig(fig, h=320):
     fig.update_layout(height=h, margin=dict(t=46,b=10,l=10,r=10),
-                      font=dict(color=OY_INK, family="Segoe UI,sans-serif"),
+                      font=dict(color=OY_INK, family="Inter,Segoe UI,sans-serif"),
                       plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
                       title_font=dict(color=OY_TEAL_DARK, size=14))
     return fig
@@ -311,6 +338,7 @@ def load_data(file) -> pd.DataFrame:
         "lau o": "mantenimiento", "carolina": "mantenimiento",
         "giselle": "mantenimiento", "carlos": "mantenimiento",
         "alonso": "retención", "diana": "retención",
+        "glina": "retención", "claudia": "retención",   # Fidelización (confirmado en HubSpot)
     }
     if "tag" in df.columns:
         df["tag"] = df["tag"].apply(
@@ -578,7 +606,7 @@ st.markdown("""
   <div class="oy-logo">opción<span>yo</span></div>
   <div class="oy-htxt">
     <p class="oy-htitle">Dashboard de Gestión · Atención al Cliente</p>
-    <p class="oy-hsub">Vista Gerencial · powered by Treble · v3</p>
+    <p class="oy-hsub">Vista gerencial · datos Treble + HubSpot en vivo</p>
   </div>
 </div>""", unsafe_allow_html=True)
 
@@ -1026,7 +1054,7 @@ def resp_exportar_excel(d: pd.DataFrame, cierres=True):
     return buf.getvalue()
 
 
-(t1, t2, t3, t4, t5, t6, t7, t8, t9, t_aj, t_resp, t_esp, t_camp) = st.tabs([
+(t1, t2, t3, t4, t5, t6, t7, t8, t9, t_aj, t_resp, t_esp, t_camp, t_hub) = st.tabs([
     "🏠 Resumen Ejecutivo",
     "⭐ Calificación",
     "🚨 Cancelaciones & Churn",
@@ -1040,6 +1068,7 @@ def resp_exportar_excel(d: pd.DataFrame, cierres=True):
     "📑 Respaldo Excel",
     "🎓 Especialistas: Calif. bajas",
     "📣 Campañas (outbound)",
+    "🎫 Tickets HubSpot",
 ])
 
 
@@ -2735,6 +2764,83 @@ with t_camp:
                     'respuesta, lo que reduce inasistencias. Las campañas de pago y reactivación '
                     'conectan directo con el churn que se mide en la pestaña de Cancelaciones.</div>',
                     unsafe_allow_html=True)
+
+
+# ╔════════════════════════════════════════════════════════════╗
+#  TAB 14 — TICKETS HUBSPOT (en vivo)
+# ╚════════════════════════════════════════════════════════════╝
+with t_hub:
+    st.markdown('<div class="sec blue">🎫 Tickets HubSpot · en vivo</div>',
+                unsafe_allow_html=True)
+    try:
+        import hubspot_data as _hub
+        _hub_ok = True
+    except Exception:
+        _hub_ok = False
+
+    if not _hub_ok:
+        st.markdown('<div class="alrt">El módulo <code>hubspot_data.py</code> no está en el repo. '
+                    'Súbelo junto al dashboard para activar los tickets en vivo.</div>',
+                    unsafe_allow_html=True)
+    elif not _hub.hubspot_activo():
+        st.markdown('<div class="info"><b>Conecta HubSpot para ver tickets en vivo.</b><br>'
+                    'En Streamlit → Settings → Secrets añade: '
+                    '<code>HUBSPOT_TOKEN = "pat-…"</code></div>', unsafe_allow_html=True)
+    else:
+        st.markdown('<div class="info">Datos directos de HubSpot · se actualizan solos '
+                    '(caché 5 min) · se excluyen los pipelines marcados [NO USAR].</div>',
+                    unsafe_allow_html=True)
+        ch1, ch2 = st.columns([1, 3])
+        dias_h = ch1.selectbox("Rango", [7, 15, 30, 60, 90], index=2,
+                               format_func=lambda d: f"Últimos {d} días", key="hub_dias")
+        if ch2.button("🔄 Actualizar ahora", key="hub_refresh"):
+            _hub.tickets_recientes.clear()
+
+        dfh = _hub.tickets_recientes(dias=dias_h)
+        if dfh.empty:
+            st.markdown('<div class="alrt">HubSpot no devolvió tickets. Verifica que el Private App '
+                        'tenga los scopes <code>crm.objects.tickets.read</code> y '
+                        '<code>crm.objects.owners.read</code>.</div>', unsafe_allow_html=True)
+        else:
+            pipes_h = sorted(dfh["pipeline_nombre"].dropna().unique())
+            sel_h = st.multiselect("Pipeline", pipes_h, default=pipes_h, key="hub_pipes")
+            dhx = dfh[dfh["pipeline_nombre"].isin(sel_h)] if sel_h else dfh
+            res_h = _hub.resumen_tickets(dhx)
+
+            st.markdown('<div class="kpi-grid">' +
+                kpi("Tickets", f"{res_h['total']:,}", f"últimos {dias_h} días", kind="alt") +
+                kpi("Pipelines activos", f"{res_h['pipelines']}", "vigentes") +
+                kpi("Respondidos a destiempo", f"{res_h['a_destiempo']:,}", "fuera de SLA", kind="warn") +
+                kpi("% a destiempo", f"{res_h['pct_destiempo']}%", "del total", kind="amber") +
+                '</div>', unsafe_allow_html=True)
+
+            hc1, hc2 = st.columns(2)
+            with hc1:
+                st.markdown("##### Tickets por pipeline")
+                vp = dhx["pipeline_nombre"].value_counts().reset_index()
+                vp.columns = ["Pipeline", "Tickets"]
+                figp = px.bar(vp, x="Tickets", y="Pipeline", orientation="h",
+                              color_discrete_sequence=[OY_TEAL])
+                figp.update_layout(yaxis={"categoryorder": "total ascending"})
+                st.plotly_chart(sfig(figp, 300), use_container_width=True)
+            with hc2:
+                st.markdown("##### Top categorías")
+                if "hs_ticket_category" in dhx.columns:
+                    vc = (dhx["hs_ticket_category"].fillna("(sin categoría)")
+                          .value_counts().head(10).reset_index())
+                    vc.columns = ["Categoría", "Tickets"]
+                    figc = px.bar(vc, x="Tickets", y="Categoría", orientation="h",
+                                  color_discrete_sequence=[OY_TEAL_DARK])
+                    figc.update_layout(yaxis={"categoryorder": "total ascending"})
+                    st.plotly_chart(sfig(figc, 300), use_container_width=True)
+
+            st.markdown("##### Detalle de tickets recientes")
+            cols_h = [c for c in ["createdate", "subject", "pipeline_nombre",
+                                  "hs_ticket_category", "hs_resolution",
+                                  "respondido_a_tiempo_o_a_destiempo", "owner_nombre"]
+                      if c in dhx.columns]
+            st.dataframe(dhx[cols_h].head(200), use_container_width=True, hide_index=True)
+            st.caption(f"Mostrando hasta 200 de {len(dhx):,} tickets · datos en vivo (caché 5 min).")
 
 
 # ── Footer ──────────────────────────────────────────────────────────
