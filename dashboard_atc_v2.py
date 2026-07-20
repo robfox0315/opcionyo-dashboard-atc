@@ -1054,7 +1054,7 @@ def resp_exportar_excel(d: pd.DataFrame, cierres=True):
     return buf.getvalue()
 
 
-(t1, t2, t3, t4, t5, t6, t7, t8, t9, t_aj, t_resp, t_esp, t_camp, t_hub) = st.tabs([
+(t1, t2, t3, t4, t5, t6, t7, t8, t9, t_aj, t_resp, t_esp) = st.tabs([
     "🏠 Resumen Ejecutivo",
     "⭐ Calificación",
     "🚨 Cancelaciones & Churn",
@@ -1067,8 +1067,6 @@ def resp_exportar_excel(d: pd.DataFrame, cierres=True):
     "⚙️ Ajuste de Calificaciones",
     "📑 Respaldo Excel",
     "🎓 Especialistas: Calif. bajas",
-    "📣 Campañas (outbound)",
-    "🎫 Tickets HubSpot",
 ])
 
 
@@ -1080,6 +1078,50 @@ with t1:
         f"📅 **{f_ini} → {f_fin}** · {N:,} chats · {df['agent'].nunique()} agentes · "
         f"Pico: {dia_pico} {hora_pico:02d}h · Fuente: treble.csv"
     )
+
+    # ══════════════════════════════════════════════════════════
+    #  📋 REPORTE DIARIO ATC (para el reporte de la mañana)
+    # ══════════════════════════════════════════════════════════
+    st.markdown('<div class="sec">📋 Reporte Diario ATC</div>', unsafe_allow_html=True)
+    _dias = sorted(pd.Series(df_raw["created_at"].dt.date).dropna().unique())
+    cD1, cD2 = st.columns([1, 2])
+    dia_sel = cD1.selectbox("Día", _dias, index=len(_dias) - 1,
+                            format_func=lambda x: x.strftime("%d/%m/%Y"), key="rep_dia")
+    rr = df_raw[(df_raw["created_at"].dt.date == dia_sel) &
+                (df_raw["tag"].fillna("").str.lower().isin(["default", "especialistas", "sdd"]))]
+    if rr.empty:
+        st.info("Sin chats atendidos de ATC ese día.")
+    else:
+        cD2.caption(f"Equipo ATC · {len(rr):,} chats atendidos · colas SDD + Especialistas + Default")
+        st.markdown('<div class="kpi-grid">' +
+            kpi("Chats atendidos", f"{len(rr):,}", dia_sel.strftime("%d/%m/%Y"), kind="alt") +
+            kpi("Rating", f"{rr['rating_num'].mean():.2f}" if rr['rating_num'].notna().any() else "—",
+                f"{int(rr['rating_num'].notna().sum())} calificados") +
+            kpi("Primera respuesta", fmt_min(rr['tpr_min'].mean()), "promedio", kind="ok") +
+            kpi("Interacción (ref.)", fmt_min(rr['handle_min'].median()),
+                "valor oficial: Treble", kind="amber") +
+            kpi("Resolución", fmt_min(rr['dur_min'].mean()), "promedio", kind="dark") +
+            '</div>', unsafe_allow_html=True)
+        st.markdown('<div class="alrt">⚠️ <b>Interacción</b> es una <b>referencia</b>: el valor '
+                    'oficial lo calcula Treble a nivel de mensajes (no viene en el CSV). Los demás '
+                    'indicadores salen directo del treble.</div>', unsafe_allow_html=True)
+
+        st.markdown("##### Por agente (formato del reporte diario)")
+        _rows = []
+        for ag, g in rr.groupby("agent"):
+            _rows.append({
+                "Agente": ag, "Chats": len(g),
+                "Rating": round(g["rating_num"].mean(), 2) if g["rating_num"].notna().any() else None,
+                "Primera respuesta": fmt_min(g["tpr_min"].mean()),
+                "Interacción (ref.)": fmt_min(g["handle_min"].median()),
+                "Resolución": fmt_min(g["dur_min"].mean()),
+            })
+        rep = pd.DataFrame(_rows).sort_values("Chats", ascending=False)
+        st.dataframe(rep, use_container_width=True, hide_index=True)
+        st.download_button("⬇️ Descargar reporte del día (.csv)",
+                           rep.to_csv(index=False).encode("utf-8"),
+                           f"reporte_atc_{dia_sel}.csv", "text/csv", key="rep_csv")
+    st.divider()
 
     # ── Alertas automáticas ──────────────────────────────────
     if pct_churn > META_CHURN:
@@ -2615,232 +2657,6 @@ with t_esp:
                 f'Son los primeros candidatos para una encuesta corta de satisfacción '
                 f'y una llamada de seguimiento del equipo de retención.</div>',
                 unsafe_allow_html=True)
-
-
-# ╔════════════════════════════════════════════════════════════╗
-#  TAB 13 — CAMPAÑAS (OUTBOUND) · Reporte general de Treble
-# ╚════════════════════════════════════════════════════════════╝
-with t_camp:
-    st.markdown('<div class="sec blue">📣 Campañas salientes (outbound) · Reporte general Treble</div>',
-                unsafe_allow_html=True)
-    st.markdown(
-        '<div class="info"><b>¿Qué es esto?</b> El lado <b>proactivo</b>: recordatorios de sesión, '
-        'avisos de pago, opt-in de notificaciones y reactivación enviados por WhatsApp. '
-        'Complementa los chats de ATC (inbound). Sube el CSV <code>Reporte general</code> '
-        'que exportas del dashboard de Treble.</div>', unsafe_allow_html=True)
-
-    up_c = st.file_uploader("Subir CSV del Reporte general (campañas)",
-                            type=["csv"], key="camp_uploader")
-
-    def _parse_camp(file):
-        d = pd.read_csv(file)
-        req = {"name", "date", "successful", "delivered", "response_rate"}
-        if not req.issubset(set(d.columns)):
-            return None
-        d["date"] = pd.to_datetime(d["date"], errors="coerce")
-        for c in ["successful", "delivered", "response_rate"]:
-            d[c] = pd.to_numeric(d[c], errors="coerce")
-        d = d.dropna(subset=["date"])
-        d["responses"] = (d["response_rate"].fillna(0) * d["delivered"]).round()
-        d["camp"] = (d["name"].astype(str)
-                     .str.replace(r"\s*id:\d+", "", regex=True)
-                     .str.replace(r"^Copia de la conversaci[oó]n\s*", "", regex=True)
-                     .str.strip().replace("", "(sin nombre)"))
-        return d
-
-    if up_c is not None:
-        parsed = _parse_camp(up_c)
-        if parsed is None:
-            st.error("Ese CSV no tiene las columnas esperadas "
-                     "(name, date, successful, delivered, response_rate).")
-        else:
-            st.session_state["camp_df"] = parsed
-            st.success(f"✅ {up_c.name} cargado · {len(parsed):,} envíos")
-
-    cdf = st.session_state.get("camp_df")
-    if cdf is None or cdf.empty:
-        st.info("Sube el CSV del Reporte general para ver el análisis de campañas.")
-    else:
-        tot_s = int(cdf["successful"].sum())
-        tot_d = int(cdf["delivered"].sum())
-        tot_r = int(cdf["responses"].sum())
-        per = f"{cdf['date'].min():%d/%m/%Y} – {cdf['date'].max():%d/%m/%Y}"
-
-        st.markdown('<div class="kpi-grid">' +
-            kpi("Período", per, f"{len(cdf):,} envíos") +
-            kpi("Mensajes enviados", f"{tot_s:,}", "successful", kind="alt") +
-            kpi("Entregados", f"{tot_d:,}", f"{safe_pct(tot_d,tot_s)}% de entrega",
-                kind="ok" if safe_pct(tot_d,tot_s) >= 90 else "amber") +
-            kpi("Respuestas", f"{tot_r:,}", f"{safe_pct(tot_r,tot_d)}% tasa de respuesta",
-                kind="amber") +
-            kpi("Campañas", f"{cdf['camp'].nunique()}", "distintas en el período", kind="dark") +
-            '</div>', unsafe_allow_html=True)
-
-        # ── Tendencia mensual (volumen + tasa de respuesta) ────────
-        st.markdown("##### 📈 Evolución mensual — volumen entregado y tasa de respuesta")
-        cdf["mes"] = cdf["date"].dt.to_period("M").dt.to_timestamp()
-        m = (cdf.groupby("mes")
-               .agg(entregados=("delivered", "sum"), respuestas=("responses", "sum"))
-               .reset_index())
-        m["%resp"] = (m["respuestas"] / m["entregados"] * 100).round(1)
-        m["mes_lbl"] = m["mes"].dt.strftime("%b %Y")
-        figm = make_subplots(specs=[[{"secondary_y": True}]])
-        figm.add_trace(go.Bar(x=m["mes_lbl"], y=m["entregados"], name="Entregados",
-                              marker_color=OY_TEAL, opacity=.85), secondary_y=False)
-        figm.add_trace(go.Scatter(x=m["mes_lbl"], y=m["%resp"], name="% Respuesta",
-                              mode="lines+markers+text", text=[f"{v:.0f}%" for v in m["%resp"]],
-                              textposition="top center",
-                              line=dict(color=OY_WARN, width=3)), secondary_y=True)
-        figm.update_yaxes(title_text="Entregados", secondary_y=False)
-        figm.update_yaxes(title_text="% Respuesta", secondary_y=True, range=[0, 60])
-        st.plotly_chart(sfig(figm, 340), use_container_width=True)
-        st.markdown('<div class="good">📈 La tasa de respuesta pasó de ~10-12% (ene-feb) a '
-                    '~48-49% (may-jun): casi se cuadruplicó. Vale documentar qué cambió en marzo '
-                    'para sostenerlo.</div>', unsafe_allow_html=True)
-
-        # ── Tabla + ranking por campaña ────────────────────────────
-        g = (cdf.groupby("camp")
-               .agg(envios=("successful", "size"), enviados=("successful", "sum"),
-                    entregados=("delivered", "sum"), respuestas=("responses", "sum"))
-               .reset_index())
-        g["% entrega"] = (g["entregados"] / g["enviados"] * 100).round(1)
-        g["% respuesta"] = (g["respuestas"] / g["entregados"] * 100).round(1)
-        g["respuestas"] = g["respuestas"].astype(int)
-        g = g.sort_values("entregados", ascending=False)
-
-        cL, cR = st.columns([1, 1])
-        with cL:
-            st.markdown("##### 🏆 Top campañas por volumen entregado")
-            top = g.head(10)
-            figc = px.bar(top, x="entregados", y="camp", orientation="h",
-                          color="% respuesta", color_continuous_scale=[OY_WARN, OY_AMBER, OY_OK],
-                          text="entregados")
-            figc.update_traces(textposition="outside")
-            figc.update_layout(yaxis={"categoryorder": "total ascending"},
-                               coloraxis_colorbar_title="% resp")
-            st.plotly_chart(sfig(figc, 360), use_container_width=True)
-        with cR:
-            st.markdown("##### 🎯 Mejor y peor respuesta")
-            best = g[g["entregados"] >= 200].nlargest(3, "% respuesta")
-            worst = g.nsmallest(3, "% entrega")
-            best_html = "<br>".join(
-                f"• {r['camp']} — <b>{r['% respuesta']}%</b> respuesta "
-                f"({int(r['entregados']):,} entregados)"
-                for _, r in best.iterrows())
-            st.markdown('<div class="good"><b>Mejor enganche:</b><br>' + best_html + '</div>',
-                        unsafe_allow_html=True)
-            worst_html = "<br>".join(
-                f"• {r['camp']} — solo <b>{r['% entrega']}%</b> de entrega"
-                for _, r in worst.iterrows() if r["% entrega"] < 80)
-            if worst_html:
-                st.markdown('<div class="crit"><b>⚠️ Entrega rota (revisar lista/plantilla):</b>'
-                            '<br>' + worst_html + '</div>', unsafe_allow_html=True)
-            else:
-                st.markdown('<div class="good">Todas las campañas con entrega ≥ 80%.</div>',
-                            unsafe_allow_html=True)
-
-        st.markdown("##### 📋 Detalle por campaña")
-        def _hl(row):
-            sty = [""] * len(row)
-            cols = list(g.columns)
-            if row["% entrega"] < 80:
-                sty[cols.index("% entrega")] = f"color:{OY_WARN};font-weight:700"
-            if row["% respuesta"] >= 40:
-                sty[cols.index("% respuesta")] = f"color:{OY_OK};font-weight:700"
-            return sty
-        styler = (g.rename(columns={"camp": "Campaña", "envios": "Envíos",
-                                    "enviados": "Enviados", "entregados": "Entregados",
-                                    "respuestas": "Respuestas"})
-                   .style.apply(lambda r: _hl(g.loc[r.name]), axis=1)
-                   .format({"% entrega": "{:.1f}%", "% respuesta": "{:.1f}%",
-                            "Enviados": "{:,}", "Entregados": "{:,}", "Respuestas": "{:,}"}))
-        st.dataframe(styler, use_container_width=True, hide_index=True, height=420)
-        st.download_button("⬇️ Descargar análisis por campaña (.csv)",
-                           g.to_csv(index=False).encode("utf-8"),
-                           "campanas_analisis.csv", "text/csv", key="camp_csv")
-
-        st.markdown('<div class="invis">🔮 <b>Para gerencia:</b> el recordatorio temprano '
-                    '(“Sesión en 28hs”) es la campaña estrella — máximo volumen y ~49% de '
-                    'respuesta, lo que reduce inasistencias. Las campañas de pago y reactivación '
-                    'conectan directo con el churn que se mide en la pestaña de Cancelaciones.</div>',
-                    unsafe_allow_html=True)
-
-
-# ╔════════════════════════════════════════════════════════════╗
-#  TAB 14 — TICKETS HUBSPOT (en vivo)
-# ╚════════════════════════════════════════════════════════════╝
-with t_hub:
-    st.markdown('<div class="sec blue">🎫 Tickets HubSpot · en vivo</div>',
-                unsafe_allow_html=True)
-    try:
-        import hubspot_data as _hub
-        _hub_ok = True
-    except Exception:
-        _hub_ok = False
-
-    if not _hub_ok:
-        st.markdown('<div class="alrt">El módulo <code>hubspot_data.py</code> no está en el repo. '
-                    'Súbelo junto al dashboard para activar los tickets en vivo.</div>',
-                    unsafe_allow_html=True)
-    elif not _hub.hubspot_activo():
-        st.markdown('<div class="info"><b>Conecta HubSpot para ver tickets en vivo.</b><br>'
-                    'En Streamlit → Settings → Secrets añade: '
-                    '<code>HUBSPOT_TOKEN = "pat-…"</code></div>', unsafe_allow_html=True)
-    else:
-        st.markdown('<div class="info">Datos directos de HubSpot · se actualizan solos '
-                    '(caché 5 min) · se excluyen los pipelines marcados [NO USAR].</div>',
-                    unsafe_allow_html=True)
-        ch1, ch2 = st.columns([1, 3])
-        dias_h = ch1.selectbox("Rango", [7, 15, 30, 60, 90], index=2,
-                               format_func=lambda d: f"Últimos {d} días", key="hub_dias")
-        if ch2.button("🔄 Actualizar ahora", key="hub_refresh"):
-            _hub.tickets_recientes.clear()
-
-        dfh = _hub.tickets_recientes(dias=dias_h)
-        if dfh.empty:
-            st.markdown('<div class="alrt">HubSpot no devolvió tickets. Verifica que el Private App '
-                        'tenga los scopes <code>crm.objects.tickets.read</code> y '
-                        '<code>crm.objects.owners.read</code>.</div>', unsafe_allow_html=True)
-        else:
-            pipes_h = sorted(dfh["pipeline_nombre"].dropna().unique())
-            sel_h = st.multiselect("Pipeline", pipes_h, default=pipes_h, key="hub_pipes")
-            dhx = dfh[dfh["pipeline_nombre"].isin(sel_h)] if sel_h else dfh
-            res_h = _hub.resumen_tickets(dhx)
-
-            st.markdown('<div class="kpi-grid">' +
-                kpi("Tickets", f"{res_h['total']:,}", f"últimos {dias_h} días", kind="alt") +
-                kpi("Pipelines activos", f"{res_h['pipelines']}", "vigentes") +
-                kpi("Respondidos a destiempo", f"{res_h['a_destiempo']:,}", "fuera de SLA", kind="warn") +
-                kpi("% a destiempo", f"{res_h['pct_destiempo']}%", "del total", kind="amber") +
-                '</div>', unsafe_allow_html=True)
-
-            hc1, hc2 = st.columns(2)
-            with hc1:
-                st.markdown("##### Tickets por pipeline")
-                vp = dhx["pipeline_nombre"].value_counts().reset_index()
-                vp.columns = ["Pipeline", "Tickets"]
-                figp = px.bar(vp, x="Tickets", y="Pipeline", orientation="h",
-                              color_discrete_sequence=[OY_TEAL])
-                figp.update_layout(yaxis={"categoryorder": "total ascending"})
-                st.plotly_chart(sfig(figp, 300), use_container_width=True)
-            with hc2:
-                st.markdown("##### Top categorías")
-                if "hs_ticket_category" in dhx.columns:
-                    vc = (dhx["hs_ticket_category"].fillna("(sin categoría)")
-                          .value_counts().head(10).reset_index())
-                    vc.columns = ["Categoría", "Tickets"]
-                    figc = px.bar(vc, x="Tickets", y="Categoría", orientation="h",
-                                  color_discrete_sequence=[OY_TEAL_DARK])
-                    figc.update_layout(yaxis={"categoryorder": "total ascending"})
-                    st.plotly_chart(sfig(figc, 300), use_container_width=True)
-
-            st.markdown("##### Detalle de tickets recientes")
-            cols_h = [c for c in ["createdate", "subject", "pipeline_nombre",
-                                  "hs_ticket_category", "hs_resolution",
-                                  "respondido_a_tiempo_o_a_destiempo", "owner_nombre"]
-                      if c in dhx.columns]
-            st.dataframe(dhx[cols_h].head(200), use_container_width=True, hide_index=True)
-            st.caption(f"Mostrando hasta 200 de {len(dhx):,} tickets · datos en vivo (caché 5 min).")
 
 
 # ── Footer ──────────────────────────────────────────────────────────
