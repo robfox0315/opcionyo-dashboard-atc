@@ -1,0 +1,149 @@
+"""
+╔══════════════════════════════════════════════════════════════════╗
+║  treble_dwh.py · Data Warehouse de Treble (ClickHouse) en vivo    ║
+║  para el Dashboard ATC — Opción Yo                                ║
+║                                                                   ║
+║  · Credenciales SOLO desde Streamlit Secrets (nunca en código).   ║
+║  · Solo lectura. Datos con retraso máx. 3 h · últimos 3 meses.    ║
+║  · Da los indicadores EXACTOS de Treble (misma fuente).           ║
+╚══════════════════════════════════════════════════════════════════╝
+
+Secrets (Streamlit → Settings → Secrets):
+    [treble_dwh]
+    host = "eaoxkoa7g7.us-east-1.aws.clickhouse.cloud"
+    port = 8443
+    user = "opcionyo_readonly"
+    password = "TU_CONTRASEÑA"
+    database = "client_analytics"
+
+requirements.txt:  clickhouse-connect
+"""
+
+import pandas as pd
+import streamlit as st
+
+DB = "client_analytics"
+# Colas ATC (Vista Treble). Ajustable si cambia la operación.
+ATC_TAGS = ["default", "especialistas", "sdd"]
+
+
+def dwh_activo() -> bool:
+    try:
+        return bool(st.secrets.get("treble_dwh"))
+    except Exception:
+        return False
+
+
+@st.cache_resource(show_spinner=False)
+def _client():
+    import clickhouse_connect
+    c = st.secrets["treble_dwh"]
+    return clickhouse_connect.get_client(
+        host=c["host"], port=int(c.get("port", 8443)),
+        username=c["user"], password=c["password"], secure=True,
+        connect_timeout=15, send_receive_timeout=90,
+        database=c.get("database", DB))
+
+
+@st.cache_data(ttl=600, show_spinner="⏳ Consultando Data Warehouse de Treble…")
+def q(sql: str) -> pd.DataFrame:
+    """Ejecuta SQL de solo lectura y devuelve un DataFrame (cache 10 min)."""
+    return _client().query_df(sql)
+
+
+def probar_conexion() -> tuple:
+    """(ok: bool, mensaje: str). Para el botón de prueba en el dashboard."""
+    try:
+        cli = _client()
+        v = cli.server_version
+        t = cli.query_df(f"SHOW TABLES FROM {DB}")
+        return True, f"Conectado ✓ · ClickHouse {v} · {len(t)} tablas"
+    except Exception as e:
+        return False, f"{type(e).__name__}: {str(e)[:200]}"
+
+
+def _tags_sql() -> str:
+    return "', '".join(ATC_TAGS)
+
+
+# ── MÉTRICAS SEMANALES ATC (exactas · fact_conversations) ─────────
+@st.cache_data(ttl=600)
+def metricas_semanales(dias: int = 120) -> pd.DataFrame:
+    """Réplica del Histórico Semanal Global de Angela, con los números
+    EXACTOS de Treble. 'atendido' = el agente respondió (first_agent_message_at)."""
+    sql = f"""
+    SELECT
+        toStartOfWeek(created_at, 1)                                   AS semana,
+        count()                                                        AS chats_atendidos,
+        round(avgIf(rating, rating > 0), 2)                            AS rating_atc,
+        countIf(rating > 0)                                            AS chats_calificados,
+        round(countIf(rating > 0) * 100.0 / count(), 2)               AS pct_calificados,
+        round(countIf(rating < 4 AND rating > 0) * 100.0 / count(), 2) AS pct_rating_bajo4,
+        round(countIf(rating > 4) * 100.0 / count(), 2)               AS pct_rating_sobre4,
+        round(avgIf(first_response_sec, first_response_sec > 0), 0)    AS primera_resp_seg,
+        round(countIf(first_response_sec <= 300) * 100.0 / count(), 2) AS pct_5min,
+        round(countIf(first_response_sec > 300 AND first_response_sec <= 600) * 100.0 / count(), 2) AS pct_10min,
+        round(countIf(first_response_sec > 1800) * 100.0 / count(), 2) AS pct_30min,
+        round(avgIf(dateDiff('second', created_at, finished_at),
+                    finished_at IS NOT NULL), 0)                       AS resolucion_seg
+    FROM {DB}.fact_conversations
+    WHERE created_at >= now() - INTERVAL {dias} DAY
+      AND first_agent_message_at IS NOT NULL
+      AND lower(tag_name) IN ('{_tags_sql()}')
+    GROUP BY semana
+    ORDER BY semana
+    """
+    return q(sql)
+
+
+# ── TIEMPO MEDIO DE INTERACCIÓN (desde mensajes) ──────────────────
+@st.cache_data(ttl=600)
+def interaccion_semanal(dias: int = 120) -> pd.DataFrame:
+    """Interacción por semana calculada a nivel de mensajes (lo que faltaba
+    en el CSV). Definición: (último mensaje − primer mensaje del agente) por
+    conversación, promediado. ⚠️ Calibrar contra la UI de Treble la 1ª vez."""
+    sql = f"""
+    WITH conv AS (
+        SELECT
+            conversation_id,
+            toStartOfWeek(min(created_at), 1) AS semana,
+            dateDiff('second',
+                     minIf(created_at, sender = 'AGENT'),
+                     max(created_at))          AS interac_seg
+        FROM {DB}.fact_agent_messages
+        WHERE created_at >= now() - INTERVAL {dias} DAY
+        GROUP BY conversation_id
+        HAVING countIf(sender = 'AGENT') > 0
+    )
+    SELECT semana, round(avg(interac_seg), 0) AS interaccion_seg
+    FROM conv
+    GROUP BY semana
+    ORDER BY semana
+    """
+    return q(sql)
+
+
+# ── MÉTRICAS POR AGENTE (para 'Agente Histórico Semanal') ─────────
+@st.cache_data(ttl=600)
+def metricas_por_agente(dias: int = 120) -> pd.DataFrame:
+    sql = f"""
+    SELECT
+        agent_name,
+        toStartOfWeek(created_at, 1)                                   AS semana,
+        count()                                                        AS chats_atendidos,
+        round(avgIf(rating, rating > 0), 2)                            AS rating_atc,
+        round(countIf(rating < 4 AND rating > 0) * 100.0 / count(), 2) AS pct_rating_bajo4,
+        round(countIf(rating > 4) * 100.0 / count(), 2)               AS pct_rating_sobre4,
+        round(avgIf(first_response_sec, first_response_sec > 0), 0)    AS primera_resp_seg,
+        round(countIf(first_response_sec <= 300) * 100.0 / count(), 2) AS pct_5min,
+        round(countIf(first_response_sec > 1800) * 100.0 / count(), 2) AS pct_30min,
+        round(avgIf(dateDiff('second', created_at, finished_at),
+                    finished_at IS NOT NULL), 0)                       AS resolucion_seg
+    FROM {DB}.fact_conversations
+    WHERE created_at >= now() - INTERVAL {dias} DAY
+      AND first_agent_message_at IS NOT NULL
+      AND lower(tag_name) IN ('{_tags_sql()}')
+    GROUP BY agent_name, semana
+    ORDER BY agent_name, semana
+    """
+    return q(sql)
