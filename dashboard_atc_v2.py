@@ -1078,7 +1078,7 @@ with t1:
                         return f"{x // 3600}:{(x % 3600) // 60:02d}:{x % 60:02d}"
 
                     _m = _dwh.metricas_semanales(120)
-                    _int = _dwh.interaccion_semanal(120)
+                    _int = _dwh.interaccion_oficial_semanal(120)   # avg_response_time_sec (oficial)
                     if not _m.empty:
                         _m = _m.merge(_int, on="semana", how="left")
                         _disp = pd.DataFrame({
@@ -1096,6 +1096,26 @@ with t1:
                                    "gerencia a esta fuente (exacta y en vivo) y se completa la interacción.")
                     else:
                         st.caption("El DWH no devolvió filas para las colas ATC. Revisa los tag_name.")
+
+                    # ── 🤖 Datos de IA (para las filas de IA del Excel de Angela) ──
+                    st.markdown("**🤖 Datos de IA (bot)** — completa las filas de IA del Excel:")
+                    try:
+                        _ia = _dwh.ia_semanal(120)
+                        if not _ia.empty:
+                            _iad = pd.DataFrame({
+                                "Semana": pd.to_datetime(_ia["semana"]).dt.strftime("%d/%m/%Y"),
+                                "Total chats IA": _ia["total_chats_ia"],
+                                "IA derivados a agentes": _ia["ia_derivados"],
+                                "Atendidos/cerrados por IA": _ia["ia_cerrados"],
+                                "% derivación IA": _ia["pct_derivacion_ia"],
+                            })
+                            st.dataframe(_iad, use_container_width=True, hide_index=True, height=300)
+                            st.caption("Valida contra el Excel de Angela: Total IA = Derivados + "
+                                       "Cerrados. (Semana 19/jul esperado: 545 = 207 + 338.)")
+                        else:
+                            st.caption("IA sin filas — revisa el filtro inbound/status en fact_sessions.")
+                    except Exception as _eia:
+                        st.caption(f"Consulta IA no disponible: {_eia}")
 
                     # ── 🔍 Explorador temporal (para completar IA + calibrar interacción) ──
                     with st.expander("🔍 Explorador DWH (temporal · para completar IA e interacción)"):

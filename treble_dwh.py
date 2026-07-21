@@ -65,6 +65,54 @@ def probar_conexion() -> tuple:
         return False, f"{type(e).__name__}: {str(e)[:200]}"
 
 
+# ── TIEMPO MEDIO DE INTERACCIÓN (oficial · fact_agent_daily) ──────
+@st.cache_data(ttl=600)
+def interaccion_oficial_semanal(dias: int = 120) -> pd.DataFrame:
+    """Interacción EXACTA de Treble = avg_response_time_sec de fact_agent_daily
+    (métrica ya calculada por Treble), ponderada por chats atendidos y por semana."""
+    sql = f"""
+    SELECT
+        toStartOfWeek(day, 1) AS semana,
+        round(sum(avg_response_time_sec * chats_handled)
+              / nullIf(sum(if(avg_response_time_sec > 0, chats_handled, 0)), 0), 0) AS interaccion_seg
+    FROM {DB}.fact_agent_daily
+    WHERE day >= now() - INTERVAL {dias} DAY
+      AND chats_handled > 0
+    GROUP BY semana
+    ORDER BY semana
+    """
+    return q(sql)
+
+
+# ── DATOS DE IA / BOT (desde fact_sessions) ──────────────────────
+@st.cache_data(ttl=600)
+def ia_semanal(dias: int = 120) -> pd.DataFrame:
+    """Métricas de IA del Excel de gerencia. 'Total IA' = sesiones inbound del bot.
+    'Derivados' = las que pasaron a un agente (existen en fact_conversations).
+    ⚠️ Validar contra el Excel la 1ª vez (Total = Derivados + Cerrados por IA)."""
+    sql = f"""
+    WITH conv_ids AS (
+        SELECT DISTINCT contact_id
+        FROM {DB}.fact_conversations
+        WHERE created_at >= now() - INTERVAL {dias} DAY
+          AND first_agent_message_at IS NOT NULL
+    )
+    SELECT
+        toStartOfWeek(s.created_at, 1)                                      AS semana,
+        count()                                                            AS total_chats_ia,
+        countIf(s.contact_id IN (SELECT contact_id FROM conv_ids))         AS ia_derivados,
+        countIf(s.contact_id NOT IN (SELECT contact_id FROM conv_ids))     AS ia_cerrados,
+        round(countIf(s.contact_id IN (SELECT contact_id FROM conv_ids))
+              * 100.0 / count(), 2)                                        AS pct_derivacion_ia
+    FROM {DB}.fact_sessions AS s
+    WHERE s.created_at >= now() - INTERVAL {dias} DAY
+      AND s.inbound_outbound = 'inbound'
+    GROUP BY semana
+    ORDER BY semana
+    """
+    return q(sql)
+
+
 def _tags_sql() -> str:
     return "', '".join(ATC_TAGS)
 
