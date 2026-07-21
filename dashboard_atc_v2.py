@@ -1096,6 +1096,28 @@ with t1:
                                    "gerencia a esta fuente (exacta y en vivo) y se completa la interacción.")
                     else:
                         st.caption("El DWH no devolvió filas para las colas ATC. Revisa los tag_name.")
+
+                    # ── 🔍 Explorador temporal (para completar IA + calibrar interacción) ──
+                    with st.expander("🔍 Explorador DWH (temporal · para completar IA e interacción)"):
+                        st.markdown("**Tablas disponibles**")
+                        try:
+                            st.dataframe(_dwh.listar_tablas(), use_container_width=True, hide_index=True)
+                        except Exception as _e2:
+                            st.caption(f"No pude listar tablas: {_e2}")
+
+                        st.markdown("**Calibración de «Tiempo interacción»** — compara con Treble "
+                                    "(últimos 30 días) y dime cuál coincide:")
+                        try:
+                            st.dataframe(_dwh.interaccion_calibracion(30), use_container_width=True,
+                                         hide_index=True)
+                        except Exception as _e3:
+                            st.caption(f"Error calibración: {_e3}")
+
+                        st.markdown("**Muestra de `fact_sessions`** (para encontrar los datos de IA/bot):")
+                        try:
+                            st.dataframe(_dwh.muestra("fact_sessions", 5), use_container_width=True)
+                        except Exception as _e4:
+                            st.caption(f"Error muestra: {_e4}")
         except Exception as _e:
             st.caption(f"DWH no disponible en esta ejecución ({type(_e).__name__}). "
                        "El histórico usa el CSV — sin afectar el resto del dashboard.")

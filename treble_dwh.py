@@ -69,6 +69,43 @@ def _tags_sql() -> str:
     return "', '".join(ATC_TAGS)
 
 
+# ── EXPLORACIÓN (temporal, para descubrir esquema de IA y calibrar) ─
+@st.cache_data(ttl=600)
+def listar_tablas() -> pd.DataFrame:
+    return q(f"SHOW TABLES FROM {DB}")
+
+
+@st.cache_data(ttl=600)
+def muestra(tabla: str, n: int = 5) -> pd.DataFrame:
+    return q(f"SELECT * FROM {DB}.{tabla} LIMIT {int(n)}")
+
+
+@st.cache_data(ttl=600)
+def interaccion_calibracion(dias: int = 30) -> pd.DataFrame:
+    """Varias definiciones de 'interacción' para comparar contra Treble y elegir la correcta."""
+    sql = f"""
+    WITH conv AS (
+        SELECT
+            conversation_id,
+            dateDiff('second', minIf(created_at, sender='AGENT'),
+                     maxIf(created_at, sender='AGENT'))            AS span_agente,
+            dateDiff('second', minIf(created_at, sender='AGENT'),
+                     max(created_at))                              AS hasta_ultimo
+        FROM {DB}.fact_agent_messages
+        WHERE created_at >= now() - INTERVAL {dias} DAY
+        GROUP BY conversation_id
+        HAVING countIf(sender='AGENT') > 0
+    )
+    SELECT
+        round(avg(span_agente), 0)       AS prom_span_agente_seg,
+        round(median(span_agente), 0)    AS mediana_span_agente_seg,
+        round(avg(hasta_ultimo), 0)      AS prom_hasta_ultimo_seg,
+        round(median(hasta_ultimo), 0)   AS mediana_hasta_ultimo_seg
+    FROM conv
+    """
+    return q(sql)
+
+
 # ── MÉTRICAS SEMANALES ATC (exactas · fact_conversations) ─────────
 @st.cache_data(ttl=600)
 def metricas_semanales(dias: int = 120) -> pd.DataFrame:
