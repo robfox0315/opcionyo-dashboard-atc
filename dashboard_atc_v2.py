@@ -26,7 +26,7 @@ st.set_page_config(
     page_title="ATC · Opción Yo",
     page_icon="🟢",
     layout="wide",
-    initial_sidebar_state="expanded",
+    initial_sidebar_state="collapsed",
 )
 
 # ── Paleta corporativa ────────────────────────────────────────
@@ -1080,48 +1080,55 @@ with t1:
     )
 
     # ══════════════════════════════════════════════════════════
-    #  📋 REPORTE DIARIO ATC (para el reporte de la mañana)
+    #  📊 HISTÓRICO SEMANAL — vista de gerencia (reemplaza el Excel)
     # ══════════════════════════════════════════════════════════
-    st.markdown('<div class="sec">📋 Reporte Diario ATC</div>', unsafe_allow_html=True)
-    _dias = sorted(pd.Series(df_raw["created_at"].dt.date).dropna().unique())
-    cD1, cD2 = st.columns([1, 2])
-    dia_sel = cD1.selectbox("Día", _dias, index=len(_dias) - 1,
-                            format_func=lambda x: x.strftime("%d/%m/%Y"), key="rep_dia")
-    rr = df_raw[(df_raw["created_at"].dt.date == dia_sel) &
-                (df_raw["tag"].fillna("").str.lower().isin(["default", "especialistas", "sdd"]))]
-    if rr.empty:
-        st.info("Sin chats atendidos de ATC ese día.")
-    else:
-        cD2.caption(f"Equipo ATC · {len(rr):,} chats atendidos · colas SDD + Especialistas + Default")
-        st.markdown('<div class="kpi-grid">' +
-            kpi("Chats atendidos", f"{len(rr):,}", dia_sel.strftime("%d/%m/%Y"), kind="alt") +
-            kpi("Rating", f"{rr['rating_num'].mean():.2f}" if rr['rating_num'].notna().any() else "—",
-                f"{int(rr['rating_num'].notna().sum())} calificados") +
-            kpi("Primera respuesta", fmt_min(rr['tpr_min'].mean()), "promedio", kind="ok") +
-            kpi("Interacción (ref.)", fmt_min(rr['handle_min'].median()),
-                "valor oficial: Treble", kind="amber") +
-            kpi("Resolución", fmt_min(rr['dur_min'].mean()), "promedio", kind="dark") +
-            '</div>', unsafe_allow_html=True)
-        st.markdown('<div class="alrt">⚠️ <b>Interacción</b> es una <b>referencia</b>: el valor '
-                    'oficial lo calcula Treble a nivel de mensajes (no viene en el CSV). Los demás '
-                    'indicadores salen directo del treble.</div>', unsafe_allow_html=True)
+    st.markdown('<div class="sec">📊 Histórico Semanal · Global (ATC)</div>', unsafe_allow_html=True)
+    st.markdown('<div class="info">Réplica de la hoja <b>«Histórico semanal»</b> del Excel de '
+                'gerencia (sin filas de IA — ese dato aún no está disponible). '
+                'Fuente: treble · chats atendidos. Columnas = semanas + cierres mensuales.</div>',
+                unsafe_allow_html=True)
 
-        st.markdown("##### Por agente (formato del reporte diario)")
-        _rows = []
-        for ag, g in rr.groupby("agent"):
-            _rows.append({
-                "Agente": ag, "Chats": len(g),
-                "Rating": round(g["rating_num"].mean(), 2) if g["rating_num"].notna().any() else None,
-                "Primera respuesta": fmt_min(g["tpr_min"].mean()),
-                "Interacción (ref.)": fmt_min(g["handle_min"].median()),
-                "Resolución": fmt_min(g["dur_min"].mean()),
-            })
-        rep = pd.DataFrame(_rows).sort_values("Chats", ascending=False)
-        st.dataframe(rep, use_container_width=True, hide_index=True)
-        st.download_button("⬇️ Descargar reporte del día (.csv)",
-                           rep.to_csv(index=False).encode("utf-8"),
-                           f"reporte_atc_{dia_sel}.csv", "text/csv", key="rep_csv")
+    rdA = resp_preparar(df_raw)
+    atc_mask = rdA["tag"].fillna("").str.lower().isin(["default", "especialistas", "sdd"])
+    rgA = rdA[atc_mask]
+
+    _PICO_FILAS = ["Día con más chats (promedio)", "Horas con más chats (promedio)",
+                   "Día y hora con más chats (récord)"]
+
+    def _tabla_hist(base, cierres=True):
+        cols = {}
+        for dom, g in sorted(base.groupby("_domingo"), key=lambda x: x[0]):
+            b = resp_bloque(g); b.update(resp_picos(g))
+            cols[pd.Timestamp(dom).strftime("%d/%m/%Y")] = b
+        if cierres:
+            for per, g in sorted(base.groupby("_mes"), key=lambda x: x[0]):
+                b = resp_bloque(g); b.update(resp_picos(g))
+                cols[f"Cierre {RESP_MESES[per.month]} {per.year}"] = b
+        return pd.DataFrame(cols).reindex(RESP_FILAS + _PICO_FILAS)
+
+    ccg1, ccg2 = st.columns([1, 3])
+    _cierres_g = ccg1.toggle("Incluir cierres mensuales", value=True, key="rg_cierres")
+    tab_glob = _tabla_hist(rgA, _cierres_g)
+    st.dataframe(tab_glob, use_container_width=True, height=560)
+    st.markdown('<div class="alrt">⚠️ <b>«Tiempo medio interacción»</b> queda en blanco: Treble lo '
+                'calcula a nivel de mensajes y no viene en el CSV — ese dato se copia de Treble '
+                '(o se resolverá al conectar el Data Warehouse).</div>', unsafe_allow_html=True)
+    st.download_button("⬇️ Descargar Histórico Semanal Global (.csv)",
+                       tab_glob.to_csv().encode("utf-8"),
+                       "historico_semanal_global.csv", "text/csv", key="rg_csv")
+
+    # ── Agente · Histórico Semanal ────────────────────────────
+    st.markdown('<div class="sec blue">👥 Agente · Histórico Semanal</div>', unsafe_allow_html=True)
+    st.caption("Réplica de la hoja «AgenteHistorico semanal»: 10 métricas por agente, por semana.")
+    _pres = set(rgA["agent"].unique())
+    for etq, real in RESP_AGENTES.items():
+        if real not in _pres:
+            continue
+        tag_e = " 🆕" if real in RESP_NUEVOS else (" ⏹️" if real in RESP_RETIRADOS else "")
+        with st.expander(f"👤 {etq}{tag_e}"):
+            st.dataframe(resp_tabla(rdA, real, _cierres_g), use_container_width=True)
     st.divider()
+
 
     # ── Alertas automáticas ──────────────────────────────────
     if pct_churn > META_CHURN:
