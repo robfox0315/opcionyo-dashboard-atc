@@ -650,21 +650,39 @@ gc = "semana"
 dur_excl_out = True
 _FMIN = df_raw["created_at"].min().date()
 _FMAX = df_raw["created_at"].max().date()
+_AGENTES_OPTS = sorted(df_raw["agent"].dropna().unique())
+_COLAS_OPTS = sorted(df_raw["tag"].dropna().unique())
 
 
-def filtro_fecha(key, label="📅 Rango de fechas"):
-    """Filtro de fecha propio de cada pestaña (reemplaza el panel lateral)."""
-    r = st.date_input(label, (_FMIN, _FMAX), min_value=_FMIN, max_value=_FMAX, key=f"fecha_{key}")
+def filtro_fecha(key, label="📅 Rango de fechas", con_agente=True):
+    """Filtro propio de cada pestaña: fecha + (opcional) agente y cola/especialista."""
+    if con_agente:
+        c1, c2, c3 = st.columns([2, 2, 2])
+        with c1:
+            r = st.date_input(label, (_FMIN, _FMAX), min_value=_FMIN, max_value=_FMAX,
+                              key=f"fecha_{key}")
+        with c2:
+            ags = st.multiselect("👤 Agente", _AGENTES_OPTS, placeholder="Todos", key=f"ag_{key}")
+        with c3:
+            colas = st.multiselect("📂 Cola / Especialista", _COLAS_OPTS, placeholder="Todas",
+                                   key=f"co_{key}")
+    else:
+        r = st.date_input(label, (_FMIN, _FMAX), min_value=_FMIN, max_value=_FMAX, key=f"fecha_{key}")
+        ags, colas = [], []
     fi = r[0] if isinstance(r, (list, tuple)) and len(r) == 2 else _FMIN
     ff = r[1] if isinstance(r, (list, tuple)) and len(r) == 2 else _FMAX
-    return fi, ff
+    return fi, ff, ags, colas
 
 
-def _ctx(f_ini, f_fin):
-    """Filtra df_raw por fecha y calcula TODAS las métricas derivadas.
+def _ctx(f_ini, f_fin, ags=None, colas=None):
+    """Filtra df_raw por fecha (+ agente/cola opcionales) y calcula TODAS las métricas.
     Cada pestaña vuelca el resultado a globals() para tener su propio contexto."""
     df = df_raw[(df_raw["created_at"].dt.date >= f_ini) &
                 (df_raw["created_at"].dt.date <= f_fin)].copy()
+    if ags:
+        df = df[df["agent"].isin(ags)]
+    if colas:
+        df = df[df["tag"].isin(colas)]
     df["rating_original"] = df["rating_num"].copy()
     df["rating_ajustado"] = False
     _aj = st.session_state.get("ajustes_rating", {})
@@ -920,7 +938,7 @@ def resp_exportar_excel(d: pd.DataFrame, cierres=True):
 #  TAB 1 — RESUMEN EJECUTIVO
 # ╚═══════════════════════════════════════╝
 with t1:
-    _fi, _ff = filtro_fecha("resumen")
+    _fi, _ff, _ags, _colas = filtro_fecha("resumen", con_agente=False)
     _dfr = df_raw[(df_raw["created_at"].dt.date >= _fi) &
                   (df_raw["created_at"].dt.date <= _ff)]
     st.caption(f"📅 {_fi:%d/%m/%Y} → {_ff:%d/%m/%Y} · vista de gerencia · "
@@ -1095,8 +1113,8 @@ with t1:
 #  TAB 2 — CALIFICACIÓN
 # ╚═══════════════════════════════════════╝
 with t2:
-    _fi, _ff = filtro_fecha("cal")
-    globals().update(_ctx(_fi, _ff))
+    _fi, _ff, _ags, _colas = filtro_fecha("cal")
+    globals().update(_ctx(_fi, _ff, _ags, _colas))
     st.markdown('<div class="sec">⭐ Calificación & Satisfacción</div>', unsafe_allow_html=True)
     if pct_cal < META_CAL:
         st.markdown(f'<div class="alrt">⚠️ Solo <b>{pct_cal}%</b> de chats calificaron '
@@ -1199,8 +1217,8 @@ with t2:
 #  TAB 3 — CANCELACIONES & CHURN
 # ╚═══════════════════════════════════════╝
 with t3:
-    _fi, _ff = filtro_fecha("canc")
-    globals().update(_ctx(_fi, _ff))
+    _fi, _ff, _ags, _colas = filtro_fecha("canc")
+    globals().update(_ctx(_fi, _ff, _ags, _colas))
     n_churn        = int(df["es_churn"].sum())
     n_cancel_sesion= int(df["es_cancel_sesion"].sum())
     n_postergacion = int(df["es_postergacion"].sum())
@@ -1361,8 +1379,8 @@ with t3:
 #  TAB 4 — TIEMPO DE RESPUESTA
 # ╚═══════════════════════════════════════╝
 with t4:
-    _fi, _ff = filtro_fecha("tpr")
-    globals().update(_ctx(_fi, _ff))
+    _fi, _ff, _ags, _colas = filtro_fecha("tpr")
+    globals().update(_ctx(_fi, _ff, _ags, _colas))
     st.markdown('<div class="sec">⚡ Tiempo de Respuesta & SLA</div>', unsafe_allow_html=True)
     st.markdown('<div class="kpi-grid">' +
         kpi("TPR promedio", fmt_min(tpr_prom), f"como Treble", kind="alt") +
@@ -1469,8 +1487,8 @@ with t4:
 #  TAB 5 — RENDIMIENTO AGENTES
 # ╚═══════════════════════════════════════╝
 with t5:
-    _fi, _ff = filtro_fecha("rend")
-    globals().update(_ctx(_fi, _ff))
+    _fi, _ff, _ags, _colas = filtro_fecha("rend")
+    globals().update(_ctx(_fi, _ff, _ags, _colas))
     st.markdown('<div class="sec">📊 Rendimiento de Agentes</div>', unsafe_allow_html=True)
     st.markdown('<div class="kpi-grid">' +
         kpi("Chats atendidos", f"{N:,}", kind="alt") +
@@ -1543,8 +1561,8 @@ with t5:
 #  TAB 6 — ETIQUETAS & MOTIVOS
 # ╚═══════════════════════════════════════╝
 with t6:
-    _fi, _ff = filtro_fecha("etiq")
-    globals().update(_ctx(_fi, _ff))
+    _fi, _ff, _ags, _colas = filtro_fecha("etiq")
+    globals().update(_ctx(_fi, _ff, _ags, _colas))
     st.markdown('<div class="sec">🏷️ Etiquetas & Motivos de Contacto</div>', unsafe_allow_html=True)
 
     if pct_sin_lbl > 10:
@@ -1622,8 +1640,8 @@ with t6:
 #  TAB 7 — CLIENTES QUE MÁS LLAMAN
 # ╚════════════════════════════════════════════╝
 with t7:
-    _fi, _ff = filtro_fecha("cli")
-    globals().update(_ctx(_fi, _ff))
+    _fi, _ff, _ags, _colas = filtro_fecha("cli")
+    globals().update(_ctx(_fi, _ff, _ags, _colas))
     st.markdown('<div class="sec">📞 Clientes que más contactan & sus motivos</div>',
                 unsafe_allow_html=True)
     st.markdown(
@@ -1771,8 +1789,8 @@ with t7:
 #  TAB 8 — EXPLORADOR DE CHATS
 # ╚════════════════════════════════════════════╝
 with t8:
-    _fi, _ff = filtro_fecha("expl")
-    globals().update(_ctx(_fi, _ff))
+    _fi, _ff, _ags, _colas = filtro_fecha("expl")
+    globals().update(_ctx(_fi, _ff, _ags, _colas))
     st.markdown('<div class="sec">📋 Explorador de Chats (detalle individual)</div>',
                 unsafe_allow_html=True)
     st.markdown(
@@ -1841,8 +1859,8 @@ with t8:
 #  TAB 9 — INSIGHTS & RECOMENDACIONES
 # ╚═══════════════════════════════════════╝
 with t9:
-    _fi, _ff = filtro_fecha("insi")
-    globals().update(_ctx(_fi, _ff))
+    _fi, _ff, _ags, _colas = filtro_fecha("insi")
+    globals().update(_ctx(_fi, _ff, _ags, _colas))
     st.markdown('<div class="sec">💡 Insights & Recomendaciones Estratégicas</div>',
                 unsafe_allow_html=True)
     st.caption(f"Basado en análisis de {N:,} chats · {f_ini} → {f_fin} · Para uso estratégico del equipo directivo")
@@ -2001,8 +2019,8 @@ with t9:
 #  TAB 10 — AJUSTE DE CALIFICACIONES
 # ╚════════════════════════════════════════════════════════════╝
 with t_aj:
-    _fi, _ff = filtro_fecha("ajus")
-    globals().update(_ctx(_fi, _ff))
+    _fi, _ff, _ags, _colas = filtro_fecha("ajus")
+    globals().update(_ctx(_fi, _ff, _ags, _colas))
     st.markdown('<div class="sec">⚙️ Ajuste de Calificaciones</div>',
                 unsafe_allow_html=True)
     st.markdown(
@@ -2174,8 +2192,8 @@ with t_aj:
         'Descarga el CSV antes de cerrar para llevar un registro histórico.</div>',
         unsafe_allow_html=True)
 with t_esp:
-    _fi, _ff = filtro_fecha("esp")
-    globals().update(_ctx(_fi, _ff))
+    _fi, _ff, _ags, _colas = filtro_fecha("esp")
+    globals().update(_ctx(_fi, _ff, _ags, _colas))
     st.markdown('<div class="sec amb">🎓 Especialistas · seguimiento de calificaciones bajas</div>',
                 unsafe_allow_html=True)
     st.markdown(

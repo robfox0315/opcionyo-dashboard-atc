@@ -38,9 +38,12 @@ def dwh_activo() -> bool:
 def _client():
     import clickhouse_connect
     c = st.secrets["treble_dwh"]
+    user = c.get("username") or c.get("user") or c.get("usuario")
+    pwd  = c.get("password") or c.get("contraseña") or c.get("pass") or c.get("contrasena")
+    host = c.get("host") or c.get("servidor")
     return clickhouse_connect.get_client(
-        host=c["host"], port=int(c.get("port", 8443)),
-        username=c["user"], password=c["password"], secure=True,
+        host=host, port=int(c.get("port", 8443)),
+        username=user, password=pwd, secure=True,
         connect_timeout=15, send_receive_timeout=90,
         database=c.get("database", DB))
 
