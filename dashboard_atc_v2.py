@@ -1034,6 +1034,54 @@ with t1:
                            tab_glob.to_csv().encode("utf-8"),
                            "historico_semanal_global.csv", "text/csv", key="rg_csv")
 
+        # ── 🔌 Datos EXACTOS desde el Data Warehouse de Treble ────────
+        st.markdown('<div class="sec ok">🔌 Data Warehouse de Treble · datos exactos '
+                    '(incluye Tiempo medio interacción)</div>', unsafe_allow_html=True)
+        try:
+            import treble_dwh as _dwh
+            if not _dwh.dwh_activo():
+                st.caption("DWH no configurado (falta [treble_dwh] en Secrets). "
+                           "El histórico de arriba usa el CSV.")
+            else:
+                _ok, _msg = _dwh.probar_conexion()
+                if not _ok:
+                    st.markdown(f'<div class="alrt">No se pudo consultar el DWH: {_msg}</div>',
+                                unsafe_allow_html=True)
+                else:
+                    st.markdown(f'<div class="good">✅ {_msg}. Números directos de Treble — incluye '
+                                '<b>Tiempo medio interacción</b> (lo que el CSV no tenía). '
+                                'Compara con tu pantalla de Treble para validar.</div>',
+                                unsafe_allow_html=True)
+
+                    def _s(x):
+                        if pd.isna(x):
+                            return "—"
+                        x = int(x)
+                        return f"{x // 3600}:{(x % 3600) // 60:02d}:{x % 60:02d}"
+
+                    _m = _dwh.metricas_semanales(120)
+                    _int = _dwh.interaccion_semanal(120)
+                    if not _m.empty:
+                        _m = _m.merge(_int, on="semana", how="left")
+                        _disp = pd.DataFrame({
+                            "Semana": pd.to_datetime(_m["semana"]).dt.strftime("%d/%m/%Y"),
+                            "Chats atendidos": _m["chats_atendidos"],
+                            "Rating ATC": _m["rating_atc"],
+                            "# Calificados": _m["chats_calificados"],
+                            "% Calificados": _m["pct_calificados"],
+                            "1ª Respuesta": _m["primera_resp_seg"].apply(_s),
+                            "Tiempo interacción": _m["interaccion_seg"].apply(_s),
+                            "Resolución": _m["resolucion_seg"].apply(_s),
+                        })
+                        st.dataframe(_disp, use_container_width=True, hide_index=True, height=340)
+                        st.caption("Si estos números cuadran con Treble, migramos las tablas de "
+                                   "gerencia a esta fuente (exacta y en vivo) y se completa la interacción.")
+                    else:
+                        st.caption("El DWH no devolvió filas para las colas ATC. Revisa los tag_name.")
+        except Exception as _e:
+            st.caption(f"DWH no disponible en esta ejecución ({type(_e).__name__}). "
+                       "El histórico usa el CSV — sin afectar el resto del dashboard.")
+
         st.markdown('<div class="sec blue">👥 Agente · Histórico Semanal</div>', unsafe_allow_html=True)
         st.caption("Réplica de la hoja «AgenteHistorico semanal»: 10 métricas por agente.")
         _pres = set(rgA["agent"].unique())
