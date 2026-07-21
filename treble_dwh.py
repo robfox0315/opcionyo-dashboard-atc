@@ -73,8 +73,7 @@ def interaccion_oficial_semanal(dias: int = 120) -> pd.DataFrame:
     sql = f"""
     SELECT
         toStartOfWeek(day, 1) AS semana,
-        round(sum(avg_response_time_sec * chats_handled)
-              / nullIf(sum(if(avg_response_time_sec > 0, chats_handled, 0)), 0), 0) AS interaccion_seg
+        round(medianIf(avg_response_time_sec, avg_response_time_sec > 0), 0) AS interaccion_seg
     FROM {DB}.fact_agent_daily
     WHERE day >= now() - INTERVAL {dias} DAY
       AND chats_handled > 0
@@ -168,11 +167,11 @@ def metricas_semanales(dias: int = 120) -> pd.DataFrame:
         round(countIf(rating > 0) * 100.0 / count(), 2)               AS pct_calificados,
         round(countIf(rating < 4 AND rating > 0) * 100.0 / count(), 2) AS pct_rating_bajo4,
         round(countIf(rating > 4) * 100.0 / count(), 2)               AS pct_rating_sobre4,
-        round(avgIf(first_response_sec, first_response_sec > 0), 0)    AS primera_resp_seg,
+        round(medianIf(first_response_sec, first_response_sec > 0), 0)     AS primera_resp_seg,
         round(countIf(first_response_sec <= 300) * 100.0 / count(), 2) AS pct_5min,
         round(countIf(first_response_sec > 300 AND first_response_sec <= 600) * 100.0 / count(), 2) AS pct_10min,
         round(countIf(first_response_sec > 1800) * 100.0 / count(), 2) AS pct_30min,
-        round(avgIf(dateDiff('second', created_at, finished_at),
+        round(medianIf(dateDiff('second', created_at, finished_at),
                     finished_at IS NOT NULL), 0)                       AS resolucion_seg
     FROM {DB}.fact_conversations
     WHERE created_at >= now() - INTERVAL {dias} DAY
