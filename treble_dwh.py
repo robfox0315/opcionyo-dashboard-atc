@@ -81,6 +81,12 @@ def muestra(tabla: str, n: int = 5) -> pd.DataFrame:
 
 
 @st.cache_data(ttl=600)
+def distribucion(tabla: str, col: str) -> pd.DataFrame:
+    return q(f"SELECT {col}, count() AS filas FROM {DB}.{tabla} "
+             f"GROUP BY {col} ORDER BY filas DESC LIMIT 30")
+
+
+@st.cache_data(ttl=600)
 def interaccion_calibracion(dias: int = 30) -> pd.DataFrame:
     """Varias definiciones de 'interacción' para comparar contra Treble y elegir la correcta."""
     sql = f"""

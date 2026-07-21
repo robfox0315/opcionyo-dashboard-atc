@@ -1113,11 +1113,19 @@ with t1:
                         except Exception as _e3:
                             st.caption(f"Error calibración: {_e3}")
 
-                        st.markdown("**Muestra de `fact_sessions`** (para encontrar los datos de IA/bot):")
+                        st.markdown("**`fact_agent_daily`** (métricas oficiales de Treble ya "
+                                    "calculadas — aquí debería estar la interacción exacta):")
                         try:
-                            st.dataframe(_dwh.muestra("fact_sessions", 5), use_container_width=True)
+                            st.dataframe(_dwh.muestra("fact_agent_daily", 5), use_container_width=True)
                         except Exception as _e4:
-                            st.caption(f"Error muestra: {_e4}")
+                            st.caption(f"Error fact_agent_daily: {_e4}")
+
+                        st.markdown("**Valores de `status` en `fact_sessions`** (para separar IA vs agente):")
+                        try:
+                            st.dataframe(_dwh.distribucion("fact_sessions", "status"),
+                                         use_container_width=True, hide_index=True)
+                        except Exception as _e5:
+                            st.caption(f"Error status: {_e5}")
         except Exception as _e:
             st.caption(f"DWH no disponible en esta ejecución ({type(_e).__name__}). "
                        "El histórico usa el CSV — sin afectar el resto del dashboard.")
