@@ -87,26 +87,20 @@ def interaccion_oficial_semanal(dias: int = 120) -> pd.DataFrame:
 # ── DATOS DE IA / BOT (desde fact_sessions) ──────────────────────
 @st.cache_data(ttl=600)
 def ia_semanal(dias: int = 120) -> pd.DataFrame:
-    """Métricas de IA del Excel de gerencia. 'Total IA' = sesiones inbound del bot.
-    'Derivados' = las que pasaron a un agente (existen en fact_conversations).
-    ⚠️ Validar contra el Excel la 1ª vez (Total = Derivados + Cerrados por IA)."""
+    """Métricas de IA del Excel de gerencia, usando fact_sessions.status:
+       'AI' = cerrado por el bot · 'HumanHandover' = derivado a agente.
+       Total IA = AI + HumanHandover (coincide con el Excel: Total = Derivados + Cerrados)."""
     sql = f"""
-    WITH conv_ids AS (
-        SELECT DISTINCT contact_id
-        FROM {DB}.fact_conversations
-        WHERE created_at >= now() - INTERVAL {dias} DAY
-          AND first_agent_message_at IS NOT NULL
-    )
     SELECT
-        toStartOfWeek(s.created_at, 1)                                      AS semana,
-        count()                                                            AS total_chats_ia,
-        countIf(s.contact_id IN (SELECT contact_id FROM conv_ids))         AS ia_derivados,
-        countIf(s.contact_id NOT IN (SELECT contact_id FROM conv_ids))     AS ia_cerrados,
-        round(countIf(s.contact_id IN (SELECT contact_id FROM conv_ids))
-              * 100.0 / count(), 2)                                        AS pct_derivacion_ia
-    FROM {DB}.fact_sessions AS s
-    WHERE s.created_at >= now() - INTERVAL {dias} DAY
-      AND s.inbound_outbound = 'inbound'
+        toStartOfWeek(created_at, 1)                            AS semana,
+        countIf(status IN ('AI', 'HumanHandover'))              AS total_chats_ia,
+        countIf(status = 'HumanHandover')                       AS ia_derivados,
+        countIf(status = 'AI')                                  AS ia_cerrados,
+        round(countIf(status = 'HumanHandover') * 100.0
+              / nullIf(countIf(status IN ('AI', 'HumanHandover')), 0), 2) AS pct_derivacion_ia
+    FROM {DB}.fact_sessions
+    WHERE created_at >= now() - INTERVAL {dias} DAY
+      AND inbound_outbound = 'inbound'
     GROUP BY semana
     ORDER BY semana
     """
