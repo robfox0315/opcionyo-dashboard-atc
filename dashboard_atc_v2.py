@@ -1092,6 +1092,89 @@ with t1:
     atc_mask = rdA["tag"].fillna("").str.lower().isin(["default", "especialistas", "sdd"])
     rgA = rdA[atc_mask]
 
+    # ══════════════════════════════════════════════════════════
+    #  📈 RESUMEN VISUAL DEL CIERRE SEMANAL (KPIs + gráficos)
+    # ══════════════════════════════════════════════════════════
+    _sem = sorted(rgA["_domingo"].dropna().unique())
+    if _sem:
+        _serie = []
+        for dom in _sem:
+            g = rgA[rgA["_domingo"] == dom]; n = len(g)
+            _serie.append({
+                "Semana": pd.Timestamp(dom),
+                "Chats": n,
+                "Rating": round(g["_rating"].mean(), 2) if g["_rating"].notna().any() else np.nan,
+                "% Calificados": round(g["_rating"].notna().mean() * 100, 1),
+                "1aResp": g["_tpr"].mean(),
+                "Rating>4": round((g["_rating"] > 4).sum() / n * 100, 1) if n else 0,
+                "Duración": g["_dur"].mean(),
+            })
+        sdf = pd.DataFrame(_serie)
+        _lbls = [s.strftime("%d/%m/%Y") for s in sdf["Semana"]]
+
+        cS1, cS2 = st.columns([1, 3])
+        wk_sel = cS1.selectbox("📅 Cierre semanal", _lbls, index=len(_lbls) - 1, key="rz_wk")
+        _i = _lbls.index(wk_sel)
+        row = sdf.iloc[_i]
+        prev = sdf.iloc[_i - 1] if _i > 0 else None
+        def _dl(cur, prv, unit="", inv=False):
+            if prv is None or pd.isna(prv) or pd.isna(cur):
+                return ""
+            d = cur - prv
+            up = d >= 0
+            good = (not up) if inv else up
+            arrow = "▲" if up else "▼"
+            return f"{arrow} {abs(d):.2f}{unit} vs sem. ant."
+        cS2.markdown(f'<div class="info">Cierre de la semana del <b>{wk_sel}</b> · '
+                     f'{int(row["Chats"]):,} chats atendidos (colas ATC)</div>',
+                     unsafe_allow_html=True)
+
+        st.markdown('<div class="kpi-grid">' +
+            kpi("Chats atendidos", f"{int(row['Chats']):,}",
+                _dl(row['Chats'], prev['Chats'] if prev is not None else None), kind="alt") +
+            kpi("Rating ATC", f"{row['Rating']:.2f}" if pd.notna(row['Rating']) else "—",
+                _dl(row['Rating'], prev['Rating'] if prev is not None else None),
+                kind="ok" if pd.notna(row['Rating']) and row['Rating'] >= META_RATING else "amber") +
+            kpi("% Calificados", f"{row['% Calificados']:.1f}%",
+                _dl(row['% Calificados'], prev['% Calificados'] if prev is not None else None, "pp")) +
+            kpi("Primera respuesta", fmt_min(row['1aResp']),
+                _dl(row['1aResp'], prev['1aResp'] if prev is not None else None, "min", inv=True), kind="dark") +
+            kpi("Rating > 4", f"{row['Rating>4']:.1f}%",
+                _dl(row['Rating>4'], prev['Rating>4'] if prev is not None else None, "pp"), kind="ok") +
+            kpi("Duración prom", fmt_min(row['Duración']), "", kind="amber") +
+            '</div>', unsafe_allow_html=True)
+
+        # ── Gráficos de tendencia (resaltando la semana seleccionada) ──
+        _colbar = [OY_TEAL_DARK if i == _i else OY_TEAL for i in range(len(sdf))]
+        gc1, gc2 = st.columns(2)
+        with gc1:
+            st.markdown("**Chats atendidos por semana**")
+            fig = go.Figure(go.Bar(x=_lbls, y=sdf["Chats"], marker_color=_colbar,
+                                   text=sdf["Chats"], textposition="outside"))
+            st.plotly_chart(sfig(fig, 260), use_container_width=True)
+        with gc2:
+            st.markdown("**Rating ATC por semana**")
+            fig = go.Figure(go.Scatter(x=_lbls, y=sdf["Rating"], mode="lines+markers+text",
+                                       line=dict(color=OY_TEAL_DARK, width=3),
+                                       text=[f"{v:.2f}" if pd.notna(v) else "" for v in sdf["Rating"]],
+                                       textposition="top center"))
+            fig.add_hline(y=META_RATING, line_dash="dash", line_color=OY_OK,
+                          annotation_text=f"Meta {META_RATING}")
+            st.plotly_chart(sfig(fig, 260), use_container_width=True)
+        gc3, gc4 = st.columns(2)
+        with gc3:
+            st.markdown("**Primera respuesta (min) por semana**")
+            fig = go.Figure(go.Scatter(x=_lbls, y=sdf["1aResp"], mode="lines+markers",
+                                       line=dict(color=OY_BLUE, width=3), fill="tozeroy",
+                                       fillcolor="rgba(59,111,224,.10)"))
+            st.plotly_chart(sfig(fig, 240), use_container_width=True)
+        with gc4:
+            st.markdown("**% Calificados por semana**")
+            fig = go.Figure(go.Scatter(x=_lbls, y=sdf["% Calificados"], mode="lines+markers",
+                                       line=dict(color=OY_AMBER, width=3)))
+            st.plotly_chart(sfig(fig, 240), use_container_width=True)
+        st.divider()
+
     _PICO_FILAS = ["Día con más chats (promedio)", "Horas con más chats (promedio)",
                    "Día y hora con más chats (récord)"]
 
