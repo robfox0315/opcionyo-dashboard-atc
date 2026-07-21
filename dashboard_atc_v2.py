@@ -208,10 +208,13 @@ def kpi(label, value, delta="", kind=""):
     return f'<div class="kpi {kind}"><div class="l">{label}</div><div class="v">{value}</div>{d}</div>'
 
 def sfig(fig, h=320):
-    fig.update_layout(height=h, margin=dict(t=46,b=10,l=10,r=10),
+    fig.update_layout(height=h, margin=dict(t=46, b=10, l=10, r=10),
                       font=dict(color=OY_INK, family="Inter,Segoe UI,sans-serif"),
-                      plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
-                      title_font=dict(color=OY_TEAL_DARK, size=14))
+                      plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)")
+    if fig.layout.title.text:
+        fig.update_layout(title_font=dict(color=OY_TEAL_DARK, size=14))
+    else:
+        fig.update_layout(title=None, margin=dict(t=12, b=10, l=10, r=10))
     return fig
 
 def gauge(title, val, ref, rng, steps, suffix="", invert=False):
@@ -614,265 +617,109 @@ st.markdown("""
 # ══════════════════════════════════════════════════════════════
 #  SIDEBAR
 # ══════════════════════════════════════════════════════════════
-with st.sidebar:
-    st.markdown("### 🟢 Opción Yo · ATC v3")
+# ── Carga de datos (silenciosa · sin panel lateral) ─────────
+import glob
+if st.session_state["df_historico"].empty:
+    _fuentes = []
+    for _ruta in [DATA_FILE, os.path.join("data", DATA_FILE)]:
+        if os.path.exists(_ruta):
+            _fuentes.append(_ruta)
+            break
+    _fuentes += sorted(glob.glob("updates/*.csv")) + sorted(glob.glob("data/updates/*.csv"))
+    if not _fuentes and os.path.exists("treble.csv"):
+        _fuentes = ["treble.csv"]
+    _firma = tuple((f, os.path.getmtime(f)) for f in _fuentes if os.path.exists(f))
+    if _firma:
+        _merged = _fusionar_historico(_firma)
+        if not _merged.empty:
+            st.session_state["df_historico"] = _merged
 
-    # ── CARGA ACUMULATIVA ────────────────────────────────────
-    st.markdown("#### 📂 Fuente de datos")
-    st.caption("El dashboard ya viene con los datos **precargados** — el equipo no necesita subir nada. "
-               "Subir un CSV es **solo para actualizar** el histórico.")
-
-    # Estado de persistencia
-    if PERSIST:
-        st.caption("📡 **Modo compartido:** lo que subas se guarda y lo ve todo el equipo.")
-    else:
-        st.caption("📦 **Datos precargados del repositorio.** Para actualizar: reemplaza "
-                   "`treble_historico.csv` en GitHub, o sube un CSV aquí (solo tu sesión).")
-
-    ups = st.file_uploader(
-        "Actualizar con CSV de Treble (opcional)",
-        type=["csv"],
-        key="uploader_csv",
-        help="Solo si quieres actualizar el histórico. Puedes subir el treble completo o una "
-             "semana nueva; se acumula sin duplicar. El equipo no necesita hacer esto.")
-
-    if ups is not None:
-        nombre = ups.name
-        if nombre not in st.session_state["archivos_cargados"]:
-            with st.spinner(f"Acumulando {nombre}…"):
-                antes = len(st.session_state["df_historico"])
-                acumular_csv(ups)
-                st.session_state["archivos_cargados"].append(nombre)
-                nuevas = len(st.session_state["df_historico"]) - antes
-            if PERSIST and nuevas > 0:
-                with st.spinner("Guardando en el histórico compartido…"):
-                    ok = gh_save_df(st.session_state["df_historico"])
-                st.success(f"✅ {nombre}: +{nuevas:,} filas · "
-                           + ("guardado para todo el equipo 📡" if ok
-                              else "guardado solo en tu sesión"))
-            else:
-                st.success(f"✅ {nombre} acumulado (+{nuevas:,} filas)")
-
-    # Mostrar estado del histórico
-    if not st.session_state["df_historico"].empty:
-        hist = st.session_state["df_historico"]
-        # Diagnóstico rápido: calificadas y rango de fechas
-        _rn = pd.to_numeric(hist.get("rating", pd.Series(dtype=str)).replace("-", np.nan),
-                            errors="coerce")
-        _cal = int(_rn.notna().sum())
-        _fe = pd.to_datetime(hist.get("created_at"), errors="coerce")
-        _rango = (f"{_fe.min():%d/%m/%Y}–{_fe.max():%d/%m/%Y}"
-                  if _fe.notna().any() else "sin fechas")
-        st.markdown(f"📊 **Histórico acumulado:** {len(hist):,} filas · "
-                    f"{_cal:,} calificadas · {_rango}")
-        if _cal == 0:
-            st.markdown('<div class="crit">⚠️ El archivo cargado <b>no tiene calificaciones '
-                        'reconocibles</b>. Revisa que sea el treble completo de chats y que no '
-                        'se haya abierto/guardado en Excel (eso puede dañar el formato).</div>',
-                        unsafe_allow_html=True)
-        elif len(hist) < 200:
-            st.caption("⚠️ Son muy pocas filas para un treble completo. "
-                       "Si esperabas miles, verifica que subiste el export correcto.")
-        if st.session_state["archivos_cargados"]:
-            with st.expander("Ver archivos cargados"):
-                for i, f in enumerate(st.session_state["archivos_cargados"], 1):
-                    st.caption(f"{i}. {f}")
-        # Limpiar (en modo compartido afecta a todos → requiere confirmación)
-        if PERSIST:
-            with st.expander("🗑️ Limpiar histórico compartido"):
-                st.caption("⚠️ Esto borra el histórico para **todo el equipo**, no solo tu sesión.")
-                conf = st.checkbox("Entiendo que se borra para todos", key="conf_wipe")
-                if st.button("Borrar histórico compartido", type="secondary", disabled=not conf):
-                    gh_save_df(pd.DataFrame())
-                    st.session_state["df_historico"] = pd.DataFrame()
-                    st.session_state["archivos_cargados"] = []
-                    st.session_state["_persist_loaded"] = False
-                    st.rerun()
-        else:
-            if st.button("🗑️ Limpiar histórico y empezar de cero", type="secondary"):
-                st.session_state["df_historico"] = pd.DataFrame()
-                st.session_state["archivos_cargados"] = []
-                st.rerun()
-    else:
-        # ── AUTO-ACTUALIZACIÓN (cacheada → arranque instantáneo) ──────
-        # Carga el histórico base (treble_historico.csv) + CUALQUIER treble
-        # nuevo que dejes en la carpeta 'updates/' del repo. Se fusiona y
-        # deduplica solo (gana la versión más fresca → calificaciones tardías).
-        # ▶ Para actualizar: sube el treble nuevo a 'updates/' en GitHub. Nada más.
-        import glob
-        fuentes = []
-        for ruta in [DATA_FILE, os.path.join("data", DATA_FILE)]:
-            if os.path.exists(ruta):
-                fuentes.append(ruta)
-                break
-        fuentes += sorted(glob.glob("updates/*.csv")) + sorted(glob.glob("data/updates/*.csv"))
-        if not fuentes and os.path.exists("treble.csv"):
-            fuentes = ["treble.csv"]
-        # firma = (ruta, mtime) → invalida la caché solo si cambia algún archivo
-        firma = tuple((f, os.path.getmtime(f)) for f in fuentes if os.path.exists(f))
-
-        if firma:
-            merged = _fusionar_historico(firma)
-            if not merged.empty:
-                st.session_state["df_historico"] = merged
-                st.session_state["archivos_cargados"] = [f"📦 {os.path.basename(f)}" for f, _ in firma]
-                st.rerun()
-        if PERSIST:
-            st.info("Aún no hay datos. Sube el primer CSV de Treble.")
-            st.stop()
-        else:
-            st.warning("No encuentro datos (treble_historico.csv). "
-                       "Sube un CSV de Treble para comenzar.")
-            st.stop()
-
-    # Procesar el histórico acumulado
-    if st.session_state["df_historico"].empty:
-        st.warning("Sube al menos un CSV de Treble para comenzar.")
-        st.stop()
-
-    try:
-        df_raw = load_data(io.StringIO(
-            st.session_state["df_historico"].to_csv(index=False)))
-    except Exception as e:
-        st.error(f"Error procesando datos: {e}")
-        st.stop()
-
-    st.divider()
-    st.markdown("#### 🔍 Filtros")
-    fmin = df_raw["created_at"].min().date()
-    fmax = df_raw["created_at"].max().date()
-    rango = st.date_input("📅 Fechas", value=(fmin, fmax), min_value=fmin, max_value=fmax)
-    f_ini = rango[0] if len(rango)==2 else fmin
-    f_fin = rango[1] if len(rango)==2 else fmax
-
-    opts_cola = sorted(df_raw["tag"].dropna().unique()) if "tag" in df_raw.columns else []
-
-    # 👁️ VISTA TREBLE — deja el estado 100% comparable con Treble de un clic
-    if opts_cola and st.button("👁️ Vista Treble (número oficial)", use_container_width=True,
-                               help="Activa las 3 colas de Treble (SDD+Especialistas+Default) "
-                                    "y limpia los demás filtros para que el conteo cuadre."):
-        st.session_state["f_colas"] = [t for t in ["sdd","especialistas","default"] if t in opts_cola]
-        st.session_state["f_ags"]   = []
-        st.session_state["f_regs"]  = []
-        st.session_state["f_labs"]  = []
-        st.session_state["f_ests"]  = []
-        st.rerun()
-
-    ags   = st.multiselect("👤 Agentes", sorted(df_raw["agent"].dropna().unique()),
-                           placeholder="Todos", key="f_ags")
-    colas = st.multiselect("📂 Cola/Equipo", opts_cola, placeholder="Todas",
-                           key="f_colas") if opts_cola else []
-    with st.expander("💡 ¿Por qué a veces no cuadra con Treble?"):
-        st.markdown(
-            "- **“Chats atendidos”** cuenta los chats que un **agente respondió** "
-            "(igual que Treble).\n"
-            "- El botón **👁️ Vista Treble** deja todo listo para comparar: activa las 3 colas "
-            "y limpia los demás filtros.\n"
-            "- El toggle de outliers **no** afecta el conteo, solo el promedio de duración.\n"
-            "- Puede quedar una diferencia mínima (**< 0.2%**) por transferencias en el cambio "
-            "de día. Es normal entre dos sistemas.")
-
-    regs  = st.multiselect("🌎 Región", sorted(df_raw["region"].dropna().unique()),
-                           placeholder="Todas", key="f_regs")
-    all_lbl = sorted({l.strip() for lst in df_raw["labels"].dropna() for l in lst.split(",") if l.strip()})
-    labs  = st.multiselect("🏷️ Etiquetas", all_lbl, placeholder="Todas", key="f_labs")
-    ests  = st.multiselect("🔖 Estado", sorted(df_raw["status"].dropna().unique()),
-                           placeholder="Todos", key="f_ests")
-
-    st.divider()
-    gran = st.radio("Evolución por", ["Día","Semana","Mes"], index=1, horizontal=True)
-    gc   = {"Día":"fecha","Semana":"semana","Mes":"mes"}[gran]
-    dur_excl_out = st.toggle("Excluir outliers >5h del promedio de duración", value=True,
-                             help="Solo afecta el PROMEDIO de duración. NO cambia el conteo de chats.")
-    st.caption(f"Metas: Calif≥{META_RATING} · TPR≤{META_TPR}min · SLA2≥{META_SLA2}% · Churn≤{META_CHURN}%")
-
-# ── Aplicar filtros (el outlier YA NO afecta el conteo) ──────
-df = df_raw.copy()
-df = df[(df["created_at"].dt.date >= f_ini) & (df["created_at"].dt.date <= f_fin)]
-if ags:   df = df[df["agent"].isin(ags)]
-if colas: df = df[df["tag"].isin(colas)]
-if regs:  df = df[df["region"].isin(regs)]
-if ests:  df = df[df["status"].isin(ests)]
-if labs:
-    pat = "|".join(l.replace("+","\\+").replace(".","\\+") for l in labs)
-    df = df[df["labels"].fillna("").str.contains(pat, case=False)]
-
-# ── A. Banner: avisa si hay filtros que reducen el conteo vs Treble ──
-_filtros_activos = [n for n, v in [("Agentes", ags), ("Región", regs),
-                                   ("Etiquetas", labs), ("Estado", ests)] if v]
-if _filtros_activos:
-    st.warning("⚠️ Estás viendo datos **filtrados** por: " + ", ".join(_filtros_activos) +
-               ". El conteo será menor al total real. Para el **número oficial comparable "
-               "con Treble**, pulsa **👁️ Vista Treble** en el panel izquierdo.")
-
-
-# ── Aplicar ajustes de calificación ─────────────────────────
-# Los chats marcados como "excluir" en la pestaña de ajustes
-# tienen su rating_num puesto a NaN para que no entren en promedios.
-# La columna "rating_ajustado" indica si fue modificado.
-df = df.copy()
-df["rating_original"] = df["rating_num"].copy()
-df["rating_ajustado"] = False
-ajustes = st.session_state.get("ajustes_rating", {})
-if ajustes:
-    for chat_id, info in ajustes.items():
-        if info.get("excluir"):
-            mask = df["chat_id"] == chat_id
-            df.loc[mask, "rating_num"] = np.nan
-            df.loc[mask, "rating_ajustado"] = True
-if df.empty:
-    st.warning("No hay datos para los filtros seleccionados.")
+if st.session_state["df_historico"].empty:
+    st.warning("No encuentro datos. Sube treble_historico.csv al repositorio.")
     st.stop()
 
-# ── KPIs globales ────────────────────────────────────────────
-N          = len(df)
-n_cal      = int(df["calificado"].sum())
-pct_cal    = safe_pct(n_cal, N)
-rating     = df["rating_num"].mean()
-tpr_v      = df["tpr_min"].dropna()
-tpr_prom   = tpr_v.mean() if len(tpr_v) else np.nan
-tpr_p90    = tpr_v.quantile(.9) if len(tpr_v) else np.nan
-tpr_med    = tpr_v.median() if len(tpr_v) else np.nan
-pct_sla2   = safe_pct(df["sla_2min"].sum(), len(tpr_v)) if len(tpr_v) else 0
-pct_sla5   = safe_pct(df["sla_5min"].sum(), len(tpr_v)) if len(tpr_v) else 0
-pct_over30 = safe_pct((tpr_v > 30).sum(), len(tpr_v)) if len(tpr_v) else 0
-pct_churn  = safe_pct(df["es_churn"].sum(), N)
-pct_reprog = safe_pct(df["es_reprog"].sum(), N)
-pct_ghost  = safe_pct(df["ghost"].sum(), N)
-pct_transf = safe_pct(df["transferido"].sum(), N)
-pct_sin_lbl= safe_pct(df["sin_label"].sum(), N)
-csat       = safe_pct((df["rating_num"] >= 4).sum(), n_cal) if n_cal else 0
-det        = safe_pct((df["rating_num"] <= 3).sum(), n_cal) if n_cal else 0
-prom5      = safe_pct((df["rating_num"] == 5).sum(), n_cal) if n_cal else 0
-contactos  = df.groupby("phone").size()
-n_recur    = int((contactos >= 2).sum())
-pct_vol_recur = safe_pct(contactos[contactos>=2].sum(), N)
-hnd_v      = df.loc[df["handle_min"] < 500, "handle_min"].dropna()
-hnd_med    = hnd_v.median() if len(hnd_v) else np.nan
-lag_v      = df["lag_asig_min"].dropna()
-lag_prom   = lag_v.mean() if len(lag_v) else np.nan
-n_ghost    = int(df["ghost"].sum())
-n_reint    = int(df["reintento"].sum())
-hora_pico  = int(safe_mode(df["hora"], 0))
-dia_pico   = DIAS_ES.get(safe_mode(df["dia_nombre"]), "–")
-top_motivo = motivo_ppal(df["labels"])
-ag_churn   = build_agent_kpis(df)
+try:
+    df_raw = load_data(io.StringIO(st.session_state["df_historico"].to_csv(index=False)))
+except Exception as e:
+    st.error(f"Error procesando datos: {e}")
+    st.stop()
 
-# ── KPIs de calificación detallados (fuente: rating_num 1–5) ─────────
-# Solo sobre los {n_cal} chats que SÍ calificaron (36% del total).
-# Los que no calificaron quedan fuera — eso se advierte en pantalla.
-n_rating  = {i: int((df["rating_num"] == i).sum()) for i in [1,2,3,4,5]}
-n_bajas   = n_rating[1] + n_rating[2] + n_rating[3]   # 1★ 2★ 3★
-n_altas   = n_rating[4] + n_rating[5]                  # 4★ 5★
-pct_1     = safe_pct(n_rating[1], n_cal)
-pct_2     = safe_pct(n_rating[2], n_cal)
-pct_3     = safe_pct(n_rating[3], n_cal)
-pct_4     = safe_pct(n_rating[4], n_cal)
-pct_5     = safe_pct(n_rating[5], n_cal)
-pct_bajas = safe_pct(n_bajas, n_cal)
-pct_altas = safe_pct(n_altas, n_cal)
-prom_bajas = df.loc[df["rating_num"] <= 3, "rating_num"].mean()
-prom_altas = df.loc[df["rating_num"] >= 4, "rating_num"].mean()
+# Sin filtros globales: cada pestaña define su propio rango de fechas.
+ags = colas = regs = labs = ests = []
+gc = "semana"
+dur_excl_out = True
+_FMIN = df_raw["created_at"].min().date()
+_FMAX = df_raw["created_at"].max().date()
+
+
+def filtro_fecha(key, label="📅 Rango de fechas"):
+    """Filtro de fecha propio de cada pestaña (reemplaza el panel lateral)."""
+    r = st.date_input(label, (_FMIN, _FMAX), min_value=_FMIN, max_value=_FMAX, key=f"fecha_{key}")
+    fi = r[0] if isinstance(r, (list, tuple)) and len(r) == 2 else _FMIN
+    ff = r[1] if isinstance(r, (list, tuple)) and len(r) == 2 else _FMAX
+    return fi, ff
+
+
+def _ctx(f_ini, f_fin):
+    """Filtra df_raw por fecha y calcula TODAS las métricas derivadas.
+    Cada pestaña vuelca el resultado a globals() para tener su propio contexto."""
+    df = df_raw[(df_raw["created_at"].dt.date >= f_ini) &
+                (df_raw["created_at"].dt.date <= f_fin)].copy()
+    df["rating_original"] = df["rating_num"].copy()
+    df["rating_ajustado"] = False
+    _aj = st.session_state.get("ajustes_rating", {})
+    if _aj and "chat_id" in df.columns:
+        for _cid, _info in _aj.items():
+            if _info.get("excluir"):
+                _m = df["chat_id"] == _cid
+                df.loc[_m, "rating_num"] = np.nan
+                df.loc[_m, "rating_ajustado"] = True
+
+    N          = len(df)
+    n_cal      = int(df["calificado"].sum())
+    pct_cal    = safe_pct(n_cal, N)
+    rating     = df["rating_num"].mean()
+    tpr_v      = df["tpr_min"].dropna()
+    tpr_prom   = tpr_v.mean() if len(tpr_v) else np.nan
+    tpr_p90    = tpr_v.quantile(.9) if len(tpr_v) else np.nan
+    tpr_med    = tpr_v.median() if len(tpr_v) else np.nan
+    pct_sla2   = safe_pct(df["sla_2min"].sum(), len(tpr_v)) if len(tpr_v) else 0
+    pct_sla5   = safe_pct(df["sla_5min"].sum(), len(tpr_v)) if len(tpr_v) else 0
+    pct_over30 = safe_pct((tpr_v > 30).sum(), len(tpr_v)) if len(tpr_v) else 0
+    pct_churn  = safe_pct(df["es_churn"].sum(), N)
+    pct_reprog = safe_pct(df["es_reprog"].sum(), N)
+    pct_ghost  = safe_pct(df["ghost"].sum(), N)
+    pct_transf = safe_pct(df["transferido"].sum(), N)
+    pct_sin_lbl= safe_pct(df["sin_label"].sum(), N)
+    csat       = safe_pct((df["rating_num"] >= 4).sum(), n_cal) if n_cal else 0
+    det        = safe_pct((df["rating_num"] <= 3).sum(), n_cal) if n_cal else 0
+    prom5      = safe_pct((df["rating_num"] == 5).sum(), n_cal) if n_cal else 0
+    contactos  = df.groupby("phone").size()
+    n_recur    = int((contactos >= 2).sum())
+    pct_vol_recur = safe_pct(contactos[contactos >= 2].sum(), N)
+    hnd_v      = df.loc[df["handle_min"] < 500, "handle_min"].dropna()
+    hnd_med    = hnd_v.median() if len(hnd_v) else np.nan
+    lag_v      = df["lag_asig_min"].dropna()
+    lag_prom   = lag_v.mean() if len(lag_v) else np.nan
+    n_ghost    = int(df["ghost"].sum())
+    n_reint    = int(df["reintento"].sum())
+    hora_pico  = int(safe_mode(df["hora"], 0))
+    dia_pico   = DIAS_ES.get(safe_mode(df["dia_nombre"]), "–")
+    top_motivo = motivo_ppal(df["labels"])
+    ag_churn   = build_agent_kpis(df)
+    n_rating  = {i: int((df["rating_num"] == i).sum()) for i in [1, 2, 3, 4, 5]}
+    n_bajas   = n_rating[1] + n_rating[2] + n_rating[3]
+    n_altas   = n_rating[4] + n_rating[5]
+    pct_1     = safe_pct(n_rating[1], n_cal)
+    pct_2     = safe_pct(n_rating[2], n_cal)
+    pct_3     = safe_pct(n_rating[3], n_cal)
+    pct_4     = safe_pct(n_rating[4], n_cal)
+    pct_5     = safe_pct(n_rating[5], n_cal)
+    pct_bajas = safe_pct(n_bajas, n_cal)
+    pct_altas = safe_pct(n_altas, n_cal)
+    prom_bajas = df.loc[df["rating_num"] <= 3, "rating_num"].mean()
+    prom_altas = df.loc[df["rating_num"] >= 4, "rating_num"].mean()
+    return {k: v for k, v in locals().items() if not k.startswith("_")}
 
 # ══════════════════════════════════════════════════════════════
 #  TABS
@@ -1054,7 +901,7 @@ def resp_exportar_excel(d: pd.DataFrame, cierres=True):
     return buf.getvalue()
 
 
-(t1, t2, t3, t4, t5, t6, t7, t8, t9, t_aj, t_resp, t_esp) = st.tabs([
+(t1, t2, t3, t4, t5, t6, t7, t8, t9, t_aj, t_esp) = st.tabs([
     "🏠 Resumen Ejecutivo",
     "⭐ Calificación",
     "🚨 Cancelaciones & Churn",
@@ -1065,7 +912,6 @@ def resp_exportar_excel(d: pd.DataFrame, cierres=True):
     "📋 Explorador de Chats",
     "💡 Insights & Recomendaciones",
     "⚙️ Ajuste de Calificaciones",
-    "📑 Respaldo Excel",
     "🎓 Especialistas: Calif. bajas",
 ])
 
@@ -1074,37 +920,26 @@ def resp_exportar_excel(d: pd.DataFrame, cierres=True):
 #  TAB 1 — RESUMEN EJECUTIVO
 # ╚═══════════════════════════════════════╝
 with t1:
-    st.caption(
-        f"📅 **{f_ini} → {f_fin}** · {N:,} chats · {df['agent'].nunique()} agentes · "
-        f"Pico: {dia_pico} {hora_pico:02d}h · Fuente: treble.csv"
-    )
+    _fi, _ff = filtro_fecha("resumen")
+    _dfr = df_raw[(df_raw["created_at"].dt.date >= _fi) &
+                  (df_raw["created_at"].dt.date <= _ff)]
+    st.caption(f"📅 {_fi:%d/%m/%Y} → {_ff:%d/%m/%Y} · vista de gerencia · "
+               f"fuente: treble · chats atendidos (colas ATC: SDD + Especialistas + Default)")
 
-    # ══════════════════════════════════════════════════════════
-    #  📊 HISTÓRICO SEMANAL — vista de gerencia (reemplaza el Excel)
-    # ══════════════════════════════════════════════════════════
-    st.markdown('<div class="sec">📊 Histórico Semanal · Global (ATC)</div>', unsafe_allow_html=True)
-    st.markdown('<div class="info">Réplica de la hoja <b>«Histórico semanal»</b> del Excel de '
-                'gerencia (sin filas de IA — ese dato aún no está disponible). '
-                'Fuente: treble · chats atendidos. Columnas = semanas + cierres mensuales.</div>',
-                unsafe_allow_html=True)
-
-    rdA = resp_preparar(df_raw)
-    atc_mask = rdA["tag"].fillna("").str.lower().isin(["default", "especialistas", "sdd"])
-    rgA = rdA[atc_mask]
-
-    # ══════════════════════════════════════════════════════════
-    #  📈 RESUMEN VISUAL DEL CIERRE SEMANAL (KPIs + gráficos)
-    # ══════════════════════════════════════════════════════════
+    rdA = resp_preparar(_dfr)
+    rgA = rdA[rdA["tag"].fillna("").str.lower().isin(["default", "especialistas", "sdd"])]
     _sem = sorted(rgA["_domingo"].dropna().unique())
-    if _sem:
+
+    if not _sem:
+        st.info("Sin datos ATC en el rango seleccionado.")
+    else:
         _serie = []
         for dom in _sem:
             g = rgA[rgA["_domingo"] == dom]; n = len(g)
             _serie.append({
-                "Semana": pd.Timestamp(dom),
-                "Chats": n,
+                "Semana": pd.Timestamp(dom), "Chats": n,
                 "Rating": round(g["_rating"].mean(), 2) if g["_rating"].notna().any() else np.nan,
-                "% Calificados": round(g["_rating"].notna().mean() * 100, 1),
+                "%Calif": round(g["_rating"].notna().mean() * 100, 1),
                 "1aResp": g["_tpr"].mean(),
                 "Rating>4": round((g["_rating"] > 4).sum() / n * 100, 1) if n else 0,
                 "Duración": g["_dur"].mean(),
@@ -1112,21 +947,20 @@ with t1:
         sdf = pd.DataFrame(_serie)
         _lbls = [s.strftime("%d/%m/%Y") for s in sdf["Semana"]]
 
+        st.markdown('<div class="sec">📈 Cierre semanal</div>', unsafe_allow_html=True)
         cS1, cS2 = st.columns([1, 3])
-        wk_sel = cS1.selectbox("📅 Cierre semanal", _lbls, index=len(_lbls) - 1, key="rz_wk")
-        _i = _lbls.index(wk_sel)
-        row = sdf.iloc[_i]
+        wk_sel = cS1.selectbox("Semana (cierre domingo)", _lbls, index=len(_lbls) - 1, key="rz_wk")
+        _i = _lbls.index(wk_sel); row = sdf.iloc[_i]
         prev = sdf.iloc[_i - 1] if _i > 0 else None
-        def _dl(cur, prv, unit="", inv=False):
+
+        def _dl(cur, prv, unit=""):
             if prv is None or pd.isna(prv) or pd.isna(cur):
                 return ""
             d = cur - prv
-            up = d >= 0
-            good = (not up) if inv else up
-            arrow = "▲" if up else "▼"
-            return f"{arrow} {abs(d):.2f}{unit} vs sem. ant."
+            return f"{'▲' if d >= 0 else '▼'} {abs(d):.2f}{unit} vs sem. ant."
+
         cS2.markdown(f'<div class="info">Cierre de la semana del <b>{wk_sel}</b> · '
-                     f'{int(row["Chats"]):,} chats atendidos (colas ATC)</div>',
+                     f'<b>{int(row["Chats"]):,}</b> chats atendidos (colas ATC)</div>',
                      unsafe_allow_html=True)
 
         st.markdown('<div class="kpi-grid">' +
@@ -1135,261 +969,86 @@ with t1:
             kpi("Rating ATC", f"{row['Rating']:.2f}" if pd.notna(row['Rating']) else "—",
                 _dl(row['Rating'], prev['Rating'] if prev is not None else None),
                 kind="ok" if pd.notna(row['Rating']) and row['Rating'] >= META_RATING else "amber") +
-            kpi("% Calificados", f"{row['% Calificados']:.1f}%",
-                _dl(row['% Calificados'], prev['% Calificados'] if prev is not None else None, "pp")) +
+            kpi("% Calificados", f"{row['%Calif']:.1f}%",
+                _dl(row['%Calif'], prev['%Calif'] if prev is not None else None, "pp")) +
             kpi("Primera respuesta", fmt_min(row['1aResp']),
-                _dl(row['1aResp'], prev['1aResp'] if prev is not None else None, "min", inv=True), kind="dark") +
+                _dl(row['1aResp'], prev['1aResp'] if prev is not None else None, "min"), kind="dark") +
             kpi("Rating > 4", f"{row['Rating>4']:.1f}%",
                 _dl(row['Rating>4'], prev['Rating>4'] if prev is not None else None, "pp"), kind="ok") +
             kpi("Duración prom", fmt_min(row['Duración']), "", kind="amber") +
             '</div>', unsafe_allow_html=True)
 
-        # ── Gráficos de tendencia (resaltando la semana seleccionada) ──
         _colbar = [OY_TEAL_DARK if i == _i else OY_TEAL for i in range(len(sdf))]
-        gc1, gc2 = st.columns(2)
-        with gc1:
+        g1, g2 = st.columns(2)
+        with g1:
             st.markdown("**Chats atendidos por semana**")
             fig = go.Figure(go.Bar(x=_lbls, y=sdf["Chats"], marker_color=_colbar,
                                    text=sdf["Chats"], textposition="outside"))
             st.plotly_chart(sfig(fig, 260), use_container_width=True)
-        with gc2:
+        with g2:
             st.markdown("**Rating ATC por semana**")
-            fig = go.Figure(go.Scatter(x=_lbls, y=sdf["Rating"], mode="lines+markers+text",
-                                       line=dict(color=OY_TEAL_DARK, width=3),
-                                       text=[f"{v:.2f}" if pd.notna(v) else "" for v in sdf["Rating"]],
-                                       textposition="top center"))
+            fig = go.Figure(go.Scatter(x=_lbls, y=sdf["Rating"], mode="lines+markers",
+                                       line=dict(color=OY_TEAL_DARK, width=3)))
             fig.add_hline(y=META_RATING, line_dash="dash", line_color=OY_OK,
                           annotation_text=f"Meta {META_RATING}")
             st.plotly_chart(sfig(fig, 260), use_container_width=True)
-        gc3, gc4 = st.columns(2)
-        with gc3:
+        g3, g4 = st.columns(2)
+        with g3:
             st.markdown("**Primera respuesta (min) por semana**")
             fig = go.Figure(go.Scatter(x=_lbls, y=sdf["1aResp"], mode="lines+markers",
                                        line=dict(color=OY_BLUE, width=3), fill="tozeroy",
                                        fillcolor="rgba(59,111,224,.10)"))
             st.plotly_chart(sfig(fig, 240), use_container_width=True)
-        with gc4:
+        with g4:
             st.markdown("**% Calificados por semana**")
-            fig = go.Figure(go.Scatter(x=_lbls, y=sdf["% Calificados"], mode="lines+markers",
+            fig = go.Figure(go.Scatter(x=_lbls, y=sdf["%Calif"], mode="lines+markers",
                                        line=dict(color=OY_AMBER, width=3)))
             st.plotly_chart(sfig(fig, 240), use_container_width=True)
+
         st.divider()
 
-    _PICO_FILAS = ["Día con más chats (promedio)", "Horas con más chats (promedio)",
-                   "Día y hora con más chats (récord)"]
+        st.markdown('<div class="sec">📊 Histórico Semanal · Global (ATC)</div>', unsafe_allow_html=True)
+        st.markdown('<div class="info">Réplica de la hoja «Histórico semanal» del Excel de gerencia '
+                    '(sin filas de IA). Columnas = semanas + cierres mensuales.</div>',
+                    unsafe_allow_html=True)
+        _PICO = ["Día con más chats (promedio)", "Horas con más chats (promedio)",
+                 "Día y hora con más chats (récord)"]
 
-    def _tabla_hist(base, cierres=True):
-        cols = {}
-        for dom, g in sorted(base.groupby("_domingo"), key=lambda x: x[0]):
-            b = resp_bloque(g); b.update(resp_picos(g))
-            cols[pd.Timestamp(dom).strftime("%d/%m/%Y")] = b
-        if cierres:
-            for per, g in sorted(base.groupby("_mes"), key=lambda x: x[0]):
+        def _tabla_hist(base, cierres=True):
+            cols = {}
+            for dom, g in sorted(base.groupby("_domingo"), key=lambda x: x[0]):
                 b = resp_bloque(g); b.update(resp_picos(g))
-                cols[f"Cierre {RESP_MESES[per.month]} {per.year}"] = b
-        return pd.DataFrame(cols).reindex(RESP_FILAS + _PICO_FILAS)
+                cols[pd.Timestamp(dom).strftime("%d/%m/%Y")] = b
+            if cierres:
+                for per, g in sorted(base.groupby("_mes"), key=lambda x: x[0]):
+                    b = resp_bloque(g); b.update(resp_picos(g))
+                    cols[f"Cierre {RESP_MESES[per.month]} {per.year}"] = b
+            return pd.DataFrame(cols).reindex(RESP_FILAS + _PICO)
 
-    ccg1, ccg2 = st.columns([1, 3])
-    _cierres_g = ccg1.toggle("Incluir cierres mensuales", value=True, key="rg_cierres")
-    tab_glob = _tabla_hist(rgA, _cierres_g)
-    st.dataframe(tab_glob, use_container_width=True, height=560)
-    st.markdown('<div class="alrt">⚠️ <b>«Tiempo medio interacción»</b> queda en blanco: Treble lo '
-                'calcula a nivel de mensajes y no viene en el CSV — ese dato se copia de Treble '
-                '(o se resolverá al conectar el Data Warehouse).</div>', unsafe_allow_html=True)
-    st.download_button("⬇️ Descargar Histórico Semanal Global (.csv)",
-                       tab_glob.to_csv().encode("utf-8"),
-                       "historico_semanal_global.csv", "text/csv", key="rg_csv")
+        _cg = st.toggle("Incluir cierres mensuales", value=True, key="rg_cierres")
+        tab_glob = _tabla_hist(rgA, _cg)
+        st.dataframe(tab_glob, use_container_width=True, height=560)
+        st.caption("«Tiempo medio interacción» queda en blanco: Treble lo calcula a nivel de "
+                   "mensajes (no viene en el CSV) — se copia de Treble o se resolverá con el DWH.")
+        st.download_button("⬇️ Descargar Histórico Semanal Global (.csv)",
+                           tab_glob.to_csv().encode("utf-8"),
+                           "historico_semanal_global.csv", "text/csv", key="rg_csv")
 
-    # ── Agente · Histórico Semanal ────────────────────────────
-    st.markdown('<div class="sec blue">👥 Agente · Histórico Semanal</div>', unsafe_allow_html=True)
-    st.caption("Réplica de la hoja «AgenteHistorico semanal»: 10 métricas por agente, por semana.")
-    _pres = set(rgA["agent"].unique())
-    for etq, real in RESP_AGENTES.items():
-        if real not in _pres:
-            continue
-        tag_e = " 🆕" if real in RESP_NUEVOS else (" ⏹️" if real in RESP_RETIRADOS else "")
-        with st.expander(f"👤 {etq}{tag_e}"):
-            st.dataframe(resp_tabla(rdA, real, _cierres_g), use_container_width=True)
-    st.divider()
-
-
-    # ── Alertas automáticas ──────────────────────────────────
-    if pct_churn > META_CHURN:
-        st.markdown(
-            f'<div class="crit">🚨 <b>CHURN DE PLAN {pct_churn}%</b> — '
-            f'{int(df["es_churn"].sum()):,} chats "Cancelar plan / Reembolso" '
-            f'(meta ≤{META_CHURN}%). Pérdida directa de ingresos.</div>',
-            unsafe_allow_html=True)
-    if pct_ghost > META_GHOST:
-        st.markdown(
-            f'<div class="crit">👻 <b>CHATS FANTASMA {pct_ghost}%</b> — '
-            f'{n_ghost:,} chats cerrados con el último mensaje del cliente. '
-            f'Nadie respondió antes del cierre.</div>',
-            unsafe_allow_html=True)
-    if pct_cal < META_CAL:
-        st.markdown(
-            f'<div class="alrt">⚠️ <b>Cobertura encuesta {pct_cal}%</b> — '
-            f'rating calculado sobre {n_cal:,} de {N:,} chats. '
-            f'El insatisfecho abandona sin calificar: el promedio sobreestima la satisfacción real.</div>',
-            unsafe_allow_html=True)
-    if pct_sla2 >= META_SLA2:
-        st.markdown(
-            f'<div class="good">✅ <b>SLA ≤2 min: {pct_sla2}%</b> — '
-            f'promedio {fmt_min(tpr_prom)}. Operación de respuesta de primer nivel.</div>',
-            unsafe_allow_html=True)
-
-    # ╌╌╌ BLOQUE 1: TOTALES OPERACIONALES ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
-    st.markdown('<div class="sec">📊 Totales Operacionales</div>', unsafe_allow_html=True)
-    st.caption("Fuente: todos los campos del CSV de Treble (treble.csv). "
-               "Los chats excluidos por filtro no se cuentan.")
-    st.markdown('<div class="kpi-grid">' +
-        kpi("Chats totales", f"{N:,}", f"{df['agent'].nunique()} agentes", kind="alt") +
-        kpi("Clientes únicos", f"{len(contactos):,}",
-            f"{N/len(contactos):.2f} chats/cliente prom") +
-        kpi("TPR promedio", fmt_min(tpr_prom),
-            f"= {tpr_prom:.1f} min · como lo calcula Treble",
-            kind="ok" if not np.isnan(tpr_prom) and tpr_prom <= META_TPR else "warn") +
-        kpi("% SLA ≤2 min", f"{pct_sla2}%",
-            f"{int(df['sla_2min'].sum()):,} de {len(tpr_v):,} chats",
-            kind="ok" if pct_sla2 >= META_SLA2 else "warn") +
-        kpi("% SLA ≤5 min", f"{pct_sla5}%", kind="ok" if pct_sla5 >= 90 else "amber") +
-        kpi("Churn de plan", f"{pct_churn}%",
-            f"{int(df['es_churn'].sum()):,} chats · meta ≤{META_CHURN}%",
-            kind="warn" if pct_churn > META_CHURN else "ok") +
-        '</div>', unsafe_allow_html=True)
-
-    # ╌╌╌ BLOQUE 2: CALIFICACIÓN TOTAL DETALLADA ╌╌╌╌╌╌╌╌╌╌╌╌╌╌
-    st.markdown('<div class="sec">⭐ Calificación Total (detalle por estrella)</div>',
-                unsafe_allow_html=True)
-    st.caption(
-        f"Fuente: columna **rating** del CSV. Solo {n_cal:,} de {N:,} chats "
-        f"({pct_cal}%) recibieron calificación. Los {N-n_cal:,} sin calificar no entran en los promedios. "
-        f"Se muestra el desglose para que gerencia vea la distribución real, no solo el promedio.")
-
-    # Fila 1: KPIs globales de calificación
-    st.markdown('<div class="kpi-grid">' +
-        kpi("Promedio global (muestra)", f"{rating:.2f} ★",
-            f"sobre {n_cal:,} calificados ({pct_cal}%)",
-            kind="ok" if rating >= META_RATING else "amber") +
-        kpi("Calificaciones 4★ y 5★", f"{n_altas:,}",
-            f"{pct_altas}% de los que calificaron — promedio {prom_altas:.2f}★", kind="ok") +
-        kpi("Calificaciones 1★, 2★ y 3★", f"{n_bajas:,}",
-            f"{pct_bajas}% — promedio {prom_bajas:.2f}★ · detractores reales",
-            kind="warn" if pct_bajas > 5 else "amber") +
-        kpi("Sin calificar", f"{N - n_cal:,}",
-            f"{100 - pct_cal}% del total — pueden ser insatisfechos", kind="dark") +
-        '</div>', unsafe_allow_html=True)
-
-    # Fila 2: Desglose estrella por estrella
-    st.markdown("**Desglose estrella por estrella** — sobre los chats que sí calificaron:")
-    st.markdown('<div class="kpi-grid">' +
-        kpi("1 ★ (muy malo)", f"{n_rating[1]:,}", f"{pct_1}%", kind="warn") +
-        kpi("2 ★ (malo)", f"{n_rating[2]:,}", f"{pct_2}%",
-            kind="warn" if pct_2 > 2 else "amber") +
-        kpi("3 ★ (regular)", f"{n_rating[3]:,}", f"{pct_3}%",
-            kind="amber" if pct_3 > 3 else "") +
-        kpi("4 ★ (bueno)", f"{n_rating[4]:,}", f"{pct_4}%", kind="ok") +
-        kpi("5 ★ (excelente)", f"{n_rating[5]:,}", f"{pct_5}%", kind="ok") +
-        '</div>', unsafe_allow_html=True)
-
-    # Gráfico distribución de estrellas + gauges
-    col_g1, col_g2, col_g3, col_g4 = st.columns([1.4, 1, 1, 1])
-    with col_g1:
-        dist_df = pd.DataFrame({
-            "Estrella": ["1★","2★","3★","4★","5★"],
-            "Chats":    [n_rating[i] for i in [1,2,3,4,5]],
-            "%":        [pct_1, pct_2, pct_3, pct_4, pct_5],
-        })
-        colores = [OY_WARN, "#FF7043", OY_AMBER, OY_TEAL, OY_OK]
-        fig_dist = go.Figure()
-        for i, row in dist_df.iterrows():
-            fig_dist.add_trace(go.Bar(
-                x=[row["Chats"]], y=[row["Estrella"]],
-                orientation="h", marker_color=colores[i],
-                text=f'{row["Chats"]:,}  ({row["%"]:.1f}%)',
-                textposition="outside", name=row["Estrella"],
-                showlegend=False))
-        fig_dist.update_layout(
-            title="Distribución de calificaciones",
-            yaxis={"categoryorder":"array","categoryarray":["1★","2★","3★","4★","5★"]},
-            barmode="stack")
-        st.plotly_chart(sfig(fig_dist, 260), use_container_width=True)
-    with col_g2:
-        st.plotly_chart(gauge("⭐ Promedio", rating, META_RATING, [1,5],
-            [{"range":[1,4],"color":"#FADBD8"},{"range":[4,META_RATING],"color":"#FDEBD0"},
-             {"range":[META_RATING,5],"color":"#D5F5E3"}]), use_container_width=True)
-    with col_g3:
-        st.plotly_chart(gauge("⚡ TPR prom (min)", min(tpr_prom or 30, 30), META_TPR, [0,30],
-            [{"range":[0,META_TPR],"color":"#D5F5E3"},{"range":[META_TPR,15],"color":"#FDEBD0"},
-             {"range":[15,30],"color":"#FADBD8"}]," min", True), use_container_width=True)
-    with col_g4:
-        st.plotly_chart(gauge("💸 Churn", pct_churn, META_CHURN, [0,30],
-            [{"range":[0,META_CHURN],"color":"#D5F5E3"},{"range":[META_CHURN,18],"color":"#FDEBD0"},
-             {"range":[18,30],"color":"#FADBD8"}],"%", True), use_container_width=True)
-
-    # ╌╌╌ NARRATIVA AUTOMÁTICA ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
-    peor_reg = (df.groupby("region")["es_churn"].mean()*100).sort_values(ascending=False)
-    reg_txt  = f"{peor_reg.index[0]} ({peor_reg.iloc[0]:.0f}%)" if len(peor_reg) else "–"
-    st.markdown(
-        f'<div class="info">'
-        f'• <b>Retención es el frente crítico:</b> {pct_churn}% churn + {pct_reprog}% reprogramaciones. '
-        f'Motivo #1 de contacto: <b>{top_motivo}</b>. Región con mayor churn: {reg_txt}.<br>'
-        f'• <b>Calificación con matices:</b> promedio {rating:.2f}★ sobre el {pct_cal}% que calificó. '
-        f'De ellos, {pct_altas}% dieron 4★–5★ y {pct_bajas}% dieron 1★–3★ '
-        f'({n_bajas:,} detractores reales).<br>'
-        f'• <b>Velocidad de respuesta excepcional:</b> {pct_sla2}% responde en ≤2 min '
-        f'(promedio {fmt_min(tpr_prom)} · mediana {fmt_min(tpr_med)}). Activo diferenciador.</div>',
-        unsafe_allow_html=True)
-
-    # ╌╌╌ BLOQUE 3: CLIENTES QUE MÁS CONTACTAN (resumen) ╌╌╌╌╌
-    st.markdown('<div class="sec">📞 Clientes que más contactan</div>', unsafe_allow_html=True)
-    st.caption(
-        "Fuente: columna **phone** del CSV — se agrupa por número de teléfono. "
-        "Se cuentan todas las conversaciones por cliente en el período filtrado. "
-        "Ver pestaña **📋 Clientes & Detalle** para la tabla completa y explorador.")
-    st.markdown('<div class="kpi-grid">' +
-        kpi("Vol. recurrente", f"{pct_vol_recur}%",
-            f"{int(contactos[contactos>=2].sum()):,} de {N:,} chats vienen de clientes con ≥2 contactos",
-            kind="alt") +
-        kpi("Clientes recurrentes (≥2)", f"{n_recur:,}",
-            f"de {len(contactos):,} únicos · {safe_pct(n_recur, len(contactos))}% volvió a contactar",
-            kind="amber") +
-        kpi("Máx contactos 1 cliente", f"{int(contactos.max())}",
-            "cliente con mayor recurrencia del período", kind="warn") +
-        kpi("Reintentos mismo día", f"{n_reint:,}",
-            "mismo cliente >1 vez en un día → problema no resuelto", kind="dark") +
-        '</div>', unsafe_allow_html=True)
-
-    # Mini-tabla top 5 + gráfico motivos — el detalle completo está en tab 7
-    tc_mini = top_clientes(df, 5)
-    cm1, cm2 = st.columns([1, 1.2])
-    with cm1:
-        st.markdown("**Top 5 clientes** — ver pestaña 📋 para los 25 completos")
-        sty_mini = (tc_mini.style
-                    .map(lambda v: f"color:{OY_WARN};font-weight:700" if v=="Sí" else "",
-                         subset=["¿Churn?"])
-                    .format({"Rating prom":"{:.2f}"}))
-        st.dataframe(sty_mini, use_container_width=True, hide_index=True, height=230)
-        st.markdown("👉 **[Ver tabla completa en pestaña 📋 Clientes & Detalle]**")
-    with cm2:
-        st.markdown("**Por qué llaman** los clientes recurrentes (≥2 contactos en el período)")
-        st.caption("Fuente: columna labels · Se toma la primera etiqueta de cada chat")
-        rec_ph = set(contactos[contactos >= 2].index)
-        rexp_m = (df[df["phone"].isin(rec_ph)]["labels"]
-                  .fillna("Sin etiqueta").str.split(r",\s*").explode().str.strip())
-        rmot_m = rexp_m.value_counts().head(8).reset_index()
-        rmot_m.columns = ["Motivo","Chats"]
-        fig_m = px.bar(rmot_m, x="Chats", y="Motivo", orientation="h",
-                       color="Chats", color_continuous_scale="Teal", text="Chats")
-        fig_m.update_traces(textposition="outside")
-        fig_m.update_layout(showlegend=False, yaxis={"categoryorder":"total ascending"})
-        st.plotly_chart(sfig(fig_m, 280), use_container_width=True)
-
+        st.markdown('<div class="sec blue">👥 Agente · Histórico Semanal</div>', unsafe_allow_html=True)
+        st.caption("Réplica de la hoja «AgenteHistorico semanal»: 10 métricas por agente.")
+        _pres = set(rgA["agent"].unique())
+        for etq, real in RESP_AGENTES.items():
+            if real not in _pres:
+                continue
+            with st.expander(f"👤 {etq}"):
+                st.dataframe(resp_tabla(rdA, real, _cg), use_container_width=True)
 
 # ╔═══════════════════════════════════════╗
 #  TAB 2 — CALIFICACIÓN
 # ╚═══════════════════════════════════════╝
 with t2:
+    _fi, _ff = filtro_fecha("cal")
+    globals().update(_ctx(_fi, _ff))
     st.markdown('<div class="sec">⭐ Calificación & Satisfacción</div>', unsafe_allow_html=True)
     if pct_cal < META_CAL:
         st.markdown(f'<div class="alrt">⚠️ Solo <b>{pct_cal}%</b> de chats calificaron '
@@ -1492,6 +1151,8 @@ with t2:
 #  TAB 3 — CANCELACIONES & CHURN
 # ╚═══════════════════════════════════════╝
 with t3:
+    _fi, _ff = filtro_fecha("canc")
+    globals().update(_ctx(_fi, _ff))
     n_churn        = int(df["es_churn"].sum())
     n_cancel_sesion= int(df["es_cancel_sesion"].sum())
     n_postergacion = int(df["es_postergacion"].sum())
@@ -1652,6 +1313,8 @@ with t3:
 #  TAB 4 — TIEMPO DE RESPUESTA
 # ╚═══════════════════════════════════════╝
 with t4:
+    _fi, _ff = filtro_fecha("tpr")
+    globals().update(_ctx(_fi, _ff))
     st.markdown('<div class="sec">⚡ Tiempo de Respuesta & SLA</div>', unsafe_allow_html=True)
     st.markdown('<div class="kpi-grid">' +
         kpi("TPR promedio", fmt_min(tpr_prom), f"como Treble", kind="alt") +
@@ -1758,6 +1421,8 @@ with t4:
 #  TAB 5 — RENDIMIENTO AGENTES
 # ╚═══════════════════════════════════════╝
 with t5:
+    _fi, _ff = filtro_fecha("rend")
+    globals().update(_ctx(_fi, _ff))
     st.markdown('<div class="sec">📊 Rendimiento de Agentes</div>', unsafe_allow_html=True)
     st.markdown('<div class="kpi-grid">' +
         kpi("Chats atendidos", f"{N:,}", kind="alt") +
@@ -1830,6 +1495,8 @@ with t5:
 #  TAB 6 — ETIQUETAS & MOTIVOS
 # ╚═══════════════════════════════════════╝
 with t6:
+    _fi, _ff = filtro_fecha("etiq")
+    globals().update(_ctx(_fi, _ff))
     st.markdown('<div class="sec">🏷️ Etiquetas & Motivos de Contacto</div>', unsafe_allow_html=True)
 
     if pct_sin_lbl > 10:
@@ -1907,6 +1574,8 @@ with t6:
 #  TAB 7 — CLIENTES QUE MÁS LLAMAN
 # ╚════════════════════════════════════════════╝
 with t7:
+    _fi, _ff = filtro_fecha("cli")
+    globals().update(_ctx(_fi, _ff))
     st.markdown('<div class="sec">📞 Clientes que más contactan & sus motivos</div>',
                 unsafe_allow_html=True)
     st.markdown(
@@ -2054,6 +1723,8 @@ with t7:
 #  TAB 8 — EXPLORADOR DE CHATS
 # ╚════════════════════════════════════════════╝
 with t8:
+    _fi, _ff = filtro_fecha("expl")
+    globals().update(_ctx(_fi, _ff))
     st.markdown('<div class="sec">📋 Explorador de Chats (detalle individual)</div>',
                 unsafe_allow_html=True)
     st.markdown(
@@ -2122,6 +1793,8 @@ with t8:
 #  TAB 9 — INSIGHTS & RECOMENDACIONES
 # ╚═══════════════════════════════════════╝
 with t9:
+    _fi, _ff = filtro_fecha("insi")
+    globals().update(_ctx(_fi, _ff))
     st.markdown('<div class="sec">💡 Insights & Recomendaciones Estratégicas</div>',
                 unsafe_allow_html=True)
     st.caption(f"Basado en análisis de {N:,} chats · {f_ini} → {f_fin} · Para uso estratégico del equipo directivo")
@@ -2280,6 +1953,8 @@ with t9:
 #  TAB 10 — AJUSTE DE CALIFICACIONES
 # ╚════════════════════════════════════════════════════════════╝
 with t_aj:
+    _fi, _ff = filtro_fecha("ajus")
+    globals().update(_ctx(_fi, _ff))
     st.markdown('<div class="sec">⚙️ Ajuste de Calificaciones</div>',
                 unsafe_allow_html=True)
     st.markdown(
@@ -2450,180 +2125,9 @@ with t_aj:
         'la sesión esté activa. Si recargas la página se pierden. '
         'Descarga el CSV antes de cerrar para llevar un registro histórico.</div>',
         unsafe_allow_html=True)
-
-
-# ╔════════════════════════════════════════════════════════════╗
-#  TAB 11 — RESPALDO EXCEL (histórico semanal / mensual por agente)
-# ╚════════════════════════════════════════════════════════════╝
-with t_resp:
-    st.markdown('<div class="sec">📑 Respaldo Excel · Histórico semanal y mensual por agente</div>',
-                unsafe_allow_html=True)
-    st.markdown(
-        '<div class="info"><b>¿Para qué sirve?</b><br>'
-        'Reproduce exactamente las filas que llenas a mano en la hoja '
-        '<b>“AgenteHistorico semanal”</b> del Excel, calculadas desde el treble. '
-        'Elige la semana y copia la columna al Excel.<br>'
-        'Muestra al equipo indicado ignorando los filtros de fecha del panel '
-        '(para tener todo el histórico disponible).</div>',
-        unsafe_allow_html=True)
-    st.caption("👥 Roster actual: **Eduardo Liendo** es nuevo · **Erika Quiñonez** se retiró "
-               "(se conserva su histórico mientras tenga datos).")
-
-    rd = resp_preparar(df_raw)
-    reales = list(RESP_AGENTES.values())
-    presentes = [a for a in reales if a in set(rd["agent"].unique())]
-    # Mostrar un agente retirado solo si aún tiene datos
-    etqs_show = [etq for etq, real in RESP_AGENTES.items()
-                 if not (real in RESP_RETIRADOS and real not in presentes)]
-    faltan = [etq for etq, real in RESP_AGENTES.items()
-              if real not in presentes and real not in RESP_RETIRADOS]
-    if faltan:
-        st.markdown('<div class="alrt">Sin datos en este CSV para: '
-                    + ", ".join(faltan) + '</div>', unsafe_allow_html=True)
-
-    cierres_on = st.toggle("Incluir columnas de cierre mensual", value=True, key="resp_cierres")
-
-    domingos = sorted(rd[rd["agent"].isin(reales)]["_domingo"].unique())
-    if not domingos:
-        st.warning("No hay chats de estos agentes en el histórico cargado.")
-    else:
-        labels_sem = [pd.Timestamp(x).strftime("%d/%m/%Y") for x in domingos]
-
-        # ── 1) Vista por semana (para copiar) ──────────────────────
-        st.markdown("##### 1️⃣ Por semana — vista para copiar")
-        sem = st.selectbox("Semana (domingo que cierra la semana)",
-                           labels_sem, index=len(labels_sem)-1, key="resp_sem")
-        objetivo = pd.Timestamp(pd.to_datetime(sem, format="%d/%m/%Y")).normalize()
-        sub = rd[rd["_domingo"] == objetivo]
-
-        cols_sem = {"TOTAL (equipo)": resp_bloque(sub[sub["agent"].isin(reales)])}
-        for etq in etqs_show:
-            cols_sem[etq] = resp_bloque(sub[sub["agent"] == RESP_AGENTES[etq]])
-        tab_sem = pd.DataFrame(cols_sem).reindex(RESP_FILAS)
-        # Fila: % del total del equipo por agente
-        def _ci(v): return v if isinstance(v, (int, float)) and not isinstance(v, bool) else 0
-        tot_chats = _ci(cols_sem["TOTAL (equipo)"]["Chats atendidos"])
-        tab_sem.loc["% del total (equipo)"] = {
-            col: (round(_ci(vals["Chats atendidos"]) / tot_chats * 100, 1) if tot_chats else 0)
-            for col, vals in cols_sem.items()}
-        st.dataframe(tab_sem, use_container_width=True, height=460)
-        st.markdown(
-            f'<div class="good">📊 <b>Chats atendidos esta semana (equipo):</b> '
-            f'{int(tot_chats):,}. La fila <b>“% del total (equipo)”</b> indica cuánto '
-            f'aporta cada agente.</div>', unsafe_allow_html=True)
-        st.markdown(
-            '<div class="alrt">⚠️ <b>“Tiempo medio interacción” queda en blanco a propósito.</b> '
-            'Treble lo calcula a nivel de mensajes y no viene en este CSV — es la única '
-            'celda que debes copiar del panel de Treble. Las demás son automáticas.</div>',
-            unsafe_allow_html=True)
-
-        # ── Día y hora con más chats (heatmap) ─────────────────────
-        st.markdown("##### 📅 Día y hora con más chats — semana seleccionada")
-        st.caption("Sobre TODA la operación (todos los agentes) de la semana elegida. "
-                   "Equivale a las filas de día/hora del Excel y al mapa de calor de Treble.")
-        wk_all = rd[rd["_domingo"] == objetivo]
-        if wk_all.empty:
-            st.info("Sin datos para esta semana.")
-        else:
-            hm = resp_dia_hora_pico(wk_all)
-            st.markdown('<div class="kpi-grid">' +
-                kpi("Día con más chats", hm["dia_max"][0],
-                    f'{hm["dia_max"][1]:,} chats', kind="alt") +
-                kpi("Día con menos chats", hm["dia_min"][0],
-                    f'{hm["dia_min"][1]:,} chats') +
-                kpi("Hora pico", f'{hm["hora_max"][0]:02d}:00',
-                    f'{hm["hora_max"][1]:,} chats', kind="amber") +
-                '</div>', unsafe_allow_html=True)
-            rdia, rhora, rn = hm["record"]
-            st.markdown(
-                f'<div class="good">🏆 <b>Récord de la semana (día y hora con más chats):</b> '
-                f'{rdia} a las {rhora:02d}:00 h con <b>{rn:,}</b> chats — '
-                f'este es el valor para esa fila del Excel.</div>', unsafe_allow_html=True)
-            fig_hm = go.Figure(go.Heatmap(
-                z=hm["z"], x=[f"{h:02d}h" for h in range(24)], y=hm["dias"],
-                colorscale=[[0, "#EAFBFC"], [0.5, OY_TEAL], [1, OY_TEAL_DARK]],
-                text=hm["z"], texttemplate="%{text}", textfont={"size": 9},
-                hovertemplate="%{y} · %{x}: %{z} chats<extra></extra>",
-                colorbar=dict(title="Chats")))
-            fig_hm.update_layout(xaxis_title=None, yaxis_title=None,
-                                 yaxis=dict(autorange="reversed"))
-            st.plotly_chart(sfig(fig_hm, 330), use_container_width=True)
-
-            # 📋 Cuadro Global copiable (semana seleccionada) — para el Excel
-            _rw = wk_all["_rating"]
-            cuadro_sem = {
-                "Chats atendidos": f"{len(wk_all):,}",
-                "# Chats calificados": f"{int(_rw.notna().sum()):,}",
-                "% Chats calificados": f"{_rw.notna().mean()*100:.2f}%",
-                **resp_picos(wk_all),
-            }
-            st.markdown(f"**📋 Cierre GLOBAL de la semana {sem} — cópialo al Excel:**")
-            st.dataframe(pd.DataFrame(cuadro_sem, index=["Valor"]).T,
-                         use_container_width=True)
-
-        # ── 📅 Cierre GLOBAL por MES (para las columnas 'Cierre' del Excel) ──
-        st.divider()
-        st.markdown("##### 📅 Cierre GLOBAL mensual — día/hora + calificados")
-        st.caption("Toda la operación (todos los agentes), igual que la hoja 'Global' del Excel.")
-        meses_disp = sorted(rd["_mes"].dropna().unique())
-        if meses_disp:
-            mlabels = [f"{RESP_MESES[m.month]} {m.year}" for m in meses_disp]
-            msel = st.selectbox("Mes de cierre", mlabels, index=len(mlabels)-1, key="resp_mes_pico")
-            mper = meses_disp[mlabels.index(msel)]
-            mes_all = rd[rd["_mes"] == mper]
-            _rm = mes_all["_rating"]
-            cuadro_mes = {
-                "Chats atendidos": f"{len(mes_all):,}",
-                "Rating ATC": f"{_rm.mean():.2f}" if _rm.notna().any() else "—",
-                "# Chats calificados": f"{int(_rm.notna().sum()):,}",
-                "% Chats calificados": f"{_rm.notna().mean()*100:.2f}%",
-                **resp_picos(mes_all),
-            }
-            st.markdown(f"**📋 Cierre {msel} (GLOBAL) — cópialo al Excel:**")
-            st.dataframe(pd.DataFrame(cuadro_mes, index=["Valor"]).T,
-                         use_container_width=True)
-
-
-        # ── 2) Histórico completo por agente ───────────────────────
-        st.divider()
-        st.markdown("##### 2️⃣ Histórico completo (todas las semanas y meses)")
-        with st.expander("🟢 TOTALES — todo el equipo junto", expanded=True):
-            st.dataframe(resp_tabla(rd, None, cierres_on), use_container_width=True)
-        for etq in etqs_show:
-            real = RESP_AGENTES[etq]
-            tag = " 🆕" if real in RESP_NUEVOS else (" ⏹️ (retirada)" if real in RESP_RETIRADOS else "")
-            with st.expander(f"👤 {etq}{tag}"):
-                st.dataframe(resp_tabla(rd, real, cierres_on), use_container_width=True)
-
-        # ── 3) Descargas (se generan SOLO al pedirlas → no ralentizan) ──
-        st.divider()
-        st.markdown("##### 3️⃣ Descargar")
-        c_dl1, c_dl2 = st.columns(2)
-        with c_dl1:
-            if st.button("📄 Generar CSV de totales", key="resp_gen_csv"):
-                st.session_state["resp_csv_data"] = resp_tabla(rd, None, cierres_on).to_csv().encode("utf-8")
-            if st.session_state.get("resp_csv_data") is not None:
-                st.download_button("⬇️ Descargar totales (.csv)", st.session_state["resp_csv_data"],
-                                   "respaldo_totales.csv", "text/csv", key="resp_csv")
-        with c_dl2:
-            if st.button("📊 Generar Excel completo", key="resp_gen_xls"):
-                try:
-                    st.session_state["resp_xls_data"] = resp_exportar_excel(rd, cierres_on)
-                except Exception:
-                    st.session_state["resp_xls_data"] = None
-                    st.caption("Para el .xlsx añade `openpyxl` a requirements.txt. Usa el CSV.")
-            if st.session_state.get("resp_xls_data") is not None:
-                st.download_button(
-                    "⬇️ Descargar respaldo (.xlsx)", st.session_state["resp_xls_data"],
-                    "respaldo_historico_semanal.xlsx",
-                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    key="resp_xlsx")
-
-
-# ╔════════════════════════════════════════════════════════════╗
-#  TAB 12 — ESPECIALISTAS: CALIFICACIONES BAJAS (solicitud de Iva)
-# ╚════════════════════════════════════════════════════════════╝
 with t_esp:
+    _fi, _ff = filtro_fecha("esp")
+    globals().update(_ctx(_fi, _ff))
     st.markdown('<div class="sec amb">🎓 Especialistas · seguimiento de calificaciones bajas</div>',
                 unsafe_allow_html=True)
     st.markdown(
