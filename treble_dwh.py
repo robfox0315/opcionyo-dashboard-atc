@@ -99,7 +99,7 @@ def ia_semanal(dias: int = 120) -> pd.DataFrame:
               / nullIf(countIf(status IN ('AI', 'HumanHandover')), 0), 2) AS pct_derivacion_ia
     FROM {DB}.fact_sessions
     WHERE created_at >= now() - INTERVAL {dias} DAY
-      AND inbound_outbound = 'inbound'
+      AND lower(inbound_outbound) = 'inbound'
     GROUP BY semana
     ORDER BY semana
     """
@@ -176,7 +176,7 @@ def metricas_semanales(dias: int = 120) -> pd.DataFrame:
     FROM {DB}.fact_conversations
     WHERE created_at >= now() - INTERVAL {dias} DAY
       AND first_agent_message_at IS NOT NULL
-      AND inbound_outbound = 'inbound'
+      AND lower(inbound_outbound) = 'inbound'
       AND lower(tag_name) IN ('{_tags_sql()}')
     GROUP BY semana
     ORDER BY semana
