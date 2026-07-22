@@ -1045,7 +1045,51 @@ with t1:
 
         _cg = st.toggle("Incluir cierres mensuales", value=True, key="rg_cierres")
         tab_glob = _tabla_hist(rgA, _cg)
-        st.dataframe(tab_glob, use_container_width=True, height=560)
+
+        # ── Completar con el DWH: Tiempo interacción + filas de IA (guardado) ──
+        try:
+            import treble_dwh as _hd
+            if _hd.dwh_activo():
+                def _sund(monday):   # DWH usa lunes; la tabla usa domingo
+                    return (pd.Timestamp(monday) + pd.Timedelta(days=6)).strftime("%d/%m/%Y")
+
+                def _hms(seg):
+                    if pd.isna(seg):
+                        return ""
+                    s = int(seg)
+                    return f"{s//3600}:{(s%3600)//60:02d}:{s%60:02d}"
+
+                # Interacción (avg_response_time_sec, mediana)
+                _iw = _hd.interaccion_oficial_semanal(120)
+                _imap = {_sund(r["semana"]): _hms(r["interaccion_seg"]) for _, r in _iw.iterrows()}
+                for col in tab_glob.columns:
+                    if col in _imap:
+                        tab_glob.loc["Tiempo medio interacción", col] = _imap[col]
+
+                # Filas de IA (fact_sessions · AI/HumanHandover)
+                _ia = _hd.ia_semanal(120)
+                _iafilas = {
+                    "Total chats IA": "total_chats_ia",
+                    "Chats IA derivados a agentes": "ia_derivados",
+                    "Atendidos y cerrados por IA": "ia_cerrados",
+                    "% derivación IA": "pct_derivacion_ia",
+                }
+                _iamap = {_sund(r["semana"]): r for _, r in _ia.iterrows()}
+                for fila, coldwh in _iafilas.items():
+                    if fila not in tab_glob.index:
+                        tab_glob.loc[fila] = ""
+                    for col in tab_glob.columns:
+                        if col in _iamap:
+                            v = _iamap[col][coldwh]
+                            tab_glob.loc[fila, col] = (f"{v:.2f}%" if "pct" in coldwh else int(v))
+                # Ordenar: IA arriba (como en el Excel de Angela)
+                _orden = (["Chats atendidos"] + list(_iafilas.keys()) +
+                          [f for f in tab_glob.index if f not in ["Chats atendidos", *_iafilas.keys()]])
+                tab_glob = tab_glob.reindex([f for f in _orden if f in tab_glob.index])
+        except Exception:
+            pass  # sin DWH, la tabla queda con interacción en blanco (como el CSV)
+
+        st.dataframe(tab_glob, use_container_width=True, height=620)
         st.caption("«Tiempo medio interacción» queda en blanco: Treble lo calcula a nivel de "
                    "mensajes (no viene en el CSV) — se copia de Treble o se resolverá con el DWH.")
         st.download_button("⬇️ Descargar Histórico Semanal Global (.csv)",
