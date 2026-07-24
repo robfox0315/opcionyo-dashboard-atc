@@ -106,6 +106,132 @@ def ia_semanal(dias: int = 120) -> pd.DataFrame:
     return q(sql)
 
 
+# ── RESUMEN ATC DIARIO (en vivo · formato del reporte de Yésica) ──
+@st.cache_data(ttl=300)
+def resumen_atc_dia(dia: str) -> pd.DataFrame:
+    """Por agente para un día, con las MISMAS métricas y fórmula que Treble:
+       chats_handled · csat · avg_first_response_sec · avg_response_time_sec
+       (= Tiempo medio interacción) · avg_resolution_min.
+       Solo agentes que ese día atendieron chats de las colas ATC."""
+    sql = f"""
+    WITH atc AS (
+        SELECT DISTINCT agent_name
+        FROM {DB}.fact_conversations
+        WHERE toDate(created_at) = toDate('{dia}')
+          AND first_agent_message_at IS NOT NULL
+          AND lower(tag_name) IN ('{_tags_sql()}')
+    )
+    SELECT
+        agent_name,
+        chats_handled,
+        avg_first_response_sec,
+        avg_response_time_sec,
+        avg_resolution_min,
+        csat_avg
+    FROM {DB}.fact_agent_daily
+    WHERE toDate(day) = toDate('{dia}')
+      AND chats_handled > 0
+      AND agent_name IN (SELECT agent_name FROM atc)
+    ORDER BY chats_handled DESC
+    """
+    return q(sql)
+
+
+@st.cache_data(ttl=300)
+def rating_atc_dia(dia: str) -> pd.DataFrame:
+    """Rating real por agente (sobre chats calificados) para ese día."""
+    sql = f"""
+    SELECT
+        agent_name,
+        count()                            AS chats,
+        countIf(rating > 0)                AS calificados,
+        round(avgIf(rating, rating > 0), 2) AS rating
+    FROM {DB}.fact_conversations
+    WHERE toDate(created_at) = toDate('{dia}')
+      AND first_agent_message_at IS NOT NULL
+      AND lower(tag_name) IN ('{_tags_sql()}')
+    GROUP BY agent_name
+    """
+    return q(sql)
+
+
+@st.cache_data(ttl=300)
+def ultimo_dia_dwh() -> str:
+    d = q(f"SELECT max(toDate(day)) AS d FROM {DB}.fact_agent_daily")
+    return str(d.iloc[0]["d"]) if not d.empty else ""
+
+
+@st.cache_data(ttl=3600)
+def columnas(tabla: str) -> list:
+    """Columnas reales de una tabla (permite adaptarse al esquema sin adivinar)."""
+    try:
+        return list(q(f"DESCRIBE TABLE {DB}.{tabla}")["name"])
+    except Exception:
+        return []
+
+
+@st.cache_data(ttl=600, show_spinner="⏳ Cargando conversaciones desde el Data Warehouse…")
+def cargar_conversaciones(dias: int = 90) -> pd.DataFrame:
+    """Trae fact_conversations con el MISMO esquema que el export CSV de Treble,
+    para que el dashboard lo consuma sin cambios. Se adapta a las columnas que
+    existan realmente (etiquetas, contacto, etc.)."""
+    cols = columnas("fact_conversations")
+    if not cols:
+        return pd.DataFrame()
+
+    def has(c):
+        return c in cols
+
+    def pick(*cands, default="''"):
+        for c in cands:
+            if has(c):
+                return c
+        return default
+
+    _labels = pick("labels", "label_names", "label_name", "labels_names", "tags", default="''")
+    _contact = pick("contact_name", "contact", "customer_name", default="''")
+    _phone = pick("contact_wa_id", "cellphone", "phone", "contact_phone", default="''")
+    _lastmsg = pick("last_message_at", "last_message", default="finished_at")
+    _sender = pick("last_message_sender", "last_sender", default="''")
+    _transfer = ("last_transfer_from" if has("last_transfer_from")
+                 else ("if(transfer_count > 0, 'transferido', NULL)" if has("transfer_count") else "NULL"))
+    _finish = pick("finish_type", "finished_by", default="''")
+    _assigned = pick("assigned_at", "first_assignment_at", default="created_at")
+
+    sql = f"""
+    SELECT
+        toString({_phone})                                             AS phone,
+        toString({_contact})                                           AS contact,
+        toString(tag_name)                                             AS tag,
+        toString(agent_name)                                           AS agent,
+        formatDateTime(created_at,  '%Y-%m-%d %H:%M:%S')               AS created_at,
+        formatDateTime({_assigned}, '%Y-%m-%d %H:%M:%S')               AS assigned_at,
+        if(finished_at IS NULL, '',
+           formatDateTime(finished_at, '%Y-%m-%d %H:%M:%S'))           AS finished_at,
+        toString({_transfer})                                          AS last_transfer_from,
+        if(first_agent_message_at IS NULL, '',
+           formatDateTime(first_agent_message_at, '%Y-%m-%d %H:%M:%S')) AS agent_first_message,
+        if({_lastmsg} IS NULL, '',
+           formatDateTime({_lastmsg}, '%Y-%m-%d %H:%M:%S'))            AS last_message,
+        toString({_sender})                                            AS last_message_sender,
+        formatDateTime(toDateTime(greatest(dateDiff('second', created_at,
+            ifNull(finished_at, created_at)), 0), 'UTC'), '%H:%M:%S')  AS duration,
+        if(rating > 0, toString(rating), '-')                          AS rating,
+        toString(status)                                               AS status,
+        toString({_finish})                                            AS finish_type,
+        formatDateTime(toDateTime(greatest(toInt64(ifNull(first_response_sec, 0)), 0),
+                       'UTC'), '%H:%M:%S')  AS agent_first_message_from_allocation,
+        toString({_labels})                                            AS labels
+    FROM {DB}.fact_conversations
+    WHERE created_at >= now() - INTERVAL {dias} DAY
+    """
+    df = q(sql)
+    if not df.empty:
+        df["business_scope_id"] = ""
+        df["agent_first_message_from_creation"] = df["agent_first_message_from_allocation"]
+    return df
+
+
 def _tags_sql() -> str:
     return "', '".join(ATC_TAGS)
 

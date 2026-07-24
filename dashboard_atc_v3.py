@@ -638,11 +638,36 @@ if st.session_state["df_historico"].empty:
     st.warning("No encuentro datos. Sube treble_historico.csv al repositorio.")
     st.stop()
 
+# ── FUENTE HÍBRIDA: histórico CSV + últimos 90 días EN VIVO del Data Warehouse ──
+# El DWH es la fuente autoritativa (datos exactos de Treble, retraso máx. 3 h) y
+# gana en el solape; el CSV aporta la historia anterior a la ventana del DWH.
+_FUENTE_TXT = "📦 Histórico (CSV)"
+try:
+    import treble_dwh as _tw
+    if _tw.dwh_activo():
+        _live = _tw.cargar_conversaciones(90)
+        if not _live.empty:
+            _base = st.session_state["df_historico"].copy()
+            _cols = [c for c in _base.columns if c in _live.columns] or list(_live.columns)
+            _base["_o"], _live["_o"] = 0, 1          # el DWH gana
+            _mix = pd.concat([_base, _live], ignore_index=True)
+            _mix["_k"] = _mix["phone"].astype(str) + "|" + _mix["created_at"].astype(str)
+            _mix = (_mix.sort_values("_o").drop_duplicates("_k", keep="last")
+                        .drop(columns=["_o", "_k"]))
+            st.session_state["df_historico"] = _mix
+            _FUENTE_TXT = (f"🟢 Data Warehouse en vivo ({len(_live):,} conversaciones · "
+                           f"últimos 90 días) + histórico CSV")
+except Exception:
+    pass   # sin DWH el dashboard sigue funcionando con el CSV
+
 try:
     df_raw = load_data(io.StringIO(st.session_state["df_historico"].to_csv(index=False)))
 except Exception as e:
     st.error(f"Error procesando datos: {e}")
     st.stop()
+
+st.caption(f"Fuente de datos: {_FUENTE_TXT} · actualizado "
+           f"{df_raw['created_at'].max():%d/%m/%Y %H:%M}")
 
 # Sin filtros globales: cada pestaña define su propio rango de fechas.
 ags = colas = regs = labs = ests = []
@@ -919,8 +944,9 @@ def resp_exportar_excel(d: pd.DataFrame, cierres=True):
     return buf.getvalue()
 
 
-(t1, t2, t3, t4, t5, t6, t7, t8, t9, t_aj, t_esp) = st.tabs([
+(t1, t_atc, t2, t3, t4, t5, t6, t7, t8, t9, t_aj, t_esp) = st.tabs([
     "🏠 Resumen Ejecutivo",
+    "📋 Resumen ATC (día)",
     "⭐ Calificación",
     "🚨 Cancelaciones & Churn",
     "⚡ Tiempo de Respuesta",
@@ -1104,6 +1130,112 @@ with t1:
                 continue
             with st.expander(f"👤 {etq}"):
                 st.dataframe(resp_tabla(rdA, real, _cg), use_container_width=True)
+
+# ╔═══════════════════════════════════════╗
+#  TAB · RESUMEN ATC (día) — EN VIVO desde el Data Warehouse
+# ╚═══════════════════════════════════════╝
+with t_atc:
+    st.markdown('<div class="sec">📋 Resumen ATC · reporte diario</div>', unsafe_allow_html=True)
+
+    def _sec_hms(s):
+        if s is None or (isinstance(s, float) and pd.isna(s)):
+            return "—"
+        s = int(round(float(s)))
+        return f"{s//3600:02d}:{(s%3600)//60:02d}:{s%60:02d}"
+
+    _dwh_ok = False
+    try:
+        import treble_dwh as _rd
+        _dwh_ok = _rd.dwh_activo()
+    except Exception:
+        _dwh_ok = False
+
+    if not _dwh_ok:
+        st.markdown('<div class="alrt">Esta pestaña se alimenta <b>en vivo</b> del Data Warehouse '
+                    'de Treble. Configura <code>[treble_dwh]</code> en Secrets para activarla.</div>',
+                    unsafe_allow_html=True)
+    else:
+        try:
+            _ult = _rd.ultimo_dia_dwh()
+            _hoy = pd.Timestamp(_ult).date() if _ult else pd.Timestamp.today().date()
+        except Exception:
+            _hoy = pd.Timestamp.today().date()
+
+        cA, cB = st.columns([1, 3])
+        _dia = cA.date_input("📅 Día", value=_hoy, key="atc_dia")
+        cB.markdown('<div class="info">Datos <b>en vivo</b> desde el Data Warehouse de Treble '
+                    '(retraso máx. 3 h). Colas: SDD + Especialistas + Default. '
+                    'Mismas métricas y fórmula que el panel de Treble.</div>',
+                    unsafe_allow_html=True)
+
+        try:
+            _ag = _rd.resumen_atc_dia(str(_dia))
+            _rt = _rd.rating_atc_dia(str(_dia))
+        except Exception as _e:
+            _ag, _rt = pd.DataFrame(), pd.DataFrame()
+            st.markdown(f'<div class="alrt">No se pudo consultar el DWH: {_e}</div>',
+                        unsafe_allow_html=True)
+
+        if _ag.empty:
+            st.info("Sin datos de ATC para ese día en el Data Warehouse.")
+        else:
+            m = _ag.merge(_rt[["agent_name", "rating", "calificados"]], on="agent_name", how="left") \
+                   if not _rt.empty else _ag.assign(rating=np.nan, calificados=0)
+            w = m["chats_handled"].astype(float)
+            tot_chats = int(w.sum())
+
+            def _pond(col):
+                v = pd.to_numeric(m[col], errors="coerce")
+                ok = v.notna() & (w > 0)
+                return float((v[ok] * w[ok]).sum() / w[ok].sum()) if ok.any() and w[ok].sum() else np.nan
+
+            _fr = _pond("avg_first_response_sec")
+            _in = _pond("avg_response_time_sec")
+            _re = _pond("avg_resolution_min") * 60 if not pd.isna(_pond("avg_resolution_min")) else np.nan
+            if not _rt.empty and _rt["calificados"].sum() > 0:
+                _rating = float((_rt["rating"].fillna(0) * _rt["calificados"]).sum() /
+                                _rt["calificados"].sum())
+            else:
+                _rating = np.nan
+
+            st.markdown('<div class="kpi-grid">' +
+                kpi("Chats atendidos", f"{tot_chats:,}", _dia.strftime("%d/%m/%Y"), kind="alt") +
+                kpi("Calificación", f"{_rating:.2f}" if not pd.isna(_rating) else "—",
+                    f"meta ≥{META_RATING}",
+                    kind="ok" if (not pd.isna(_rating) and _rating >= META_RATING) else "warn") +
+                kpi("Primera respuesta", _sec_hms(_fr), "promedio ponderado", kind="ok") +
+                kpi("Tiempo medio interacción", _sec_hms(_in), "métrica oficial Treble", kind="dark") +
+                kpi("Tiempo resolución", _sec_hms(_re), "promedio ponderado", kind="amber") +
+                '</div>', unsafe_allow_html=True)
+
+            st.markdown("##### Detalle por agente")
+            tabla = pd.DataFrame({
+                "Agente": m["agent_name"],
+                "Chats Atendidos": m["chats_handled"].astype(int),
+                "Calificación": m["rating"],
+                "Primera respuesta": m["avg_first_response_sec"].apply(_sec_hms),
+                "Tiempo medio interacción": m["avg_response_time_sec"].apply(_sec_hms),
+                "Tiempo resolución": m["avg_resolution_min"].apply(
+                    lambda v: _sec_hms(v * 60) if pd.notna(v) else "—"),
+            }).sort_values("Chats Atendidos", ascending=False)
+            st.dataframe(tabla, use_container_width=True, hide_index=True,
+                         height=min(560, 60 + 36 * len(tabla)))
+
+            st.download_button("⬇️ Descargar reporte del día (.csv)",
+                               tabla.to_csv(index=False).encode("utf-8"),
+                               f"resumen_atc_{_dia}.csv", "text/csv", key="atc_csv")
+
+            # Texto listo para pegar en Slack
+            _cum = lambda ok: "✅" if ok else "❌"
+            _txt = (f"📊 Resultados ATC | {_dia:%d de %B}\n"
+                    f"Chats atendidos: {tot_chats:,}\n"
+                    f"⭐ Calificación: {_rating:.2f} {_cum(not pd.isna(_rating) and _rating >= META_RATING)}\n"
+                    f"⏱️ Primera respuesta: {_sec_hms(_fr)} {_cum(not pd.isna(_fr) and _fr <= 60)}\n"
+                    f"💬 Tiempo medio de interacción: {_sec_hms(_in)}\n"
+                    f"⌛ Tiempo de resolución: {_sec_hms(_re)}")
+            with st.expander("📨 Texto listo para el reporte de Slack"):
+                st.code(_txt, language=None)
+
 
 # ╔═══════════════════════════════════════╗
 #  TAB 2 — CALIFICACIÓN
