@@ -139,7 +139,9 @@ def resumen_atc_dia(dia: str, equipos=None) -> pd.DataFrame:
         count()                                                   AS chats,
         countIf(c.rating > 0)                                     AS calificados,
         round(avgIf(c.rating, c.rating > 0), 2)                   AS calificacion,
-        round(avgIf(c.first_response_sec, c.first_response_sec >= 0), 0) AS primera_resp_seg,
+        round(avgIf(dateDiff('second', c.assigned_at, c.first_agent_message_at),
+                    c.assigned_at IS NOT NULL AND c.first_agent_message_at IS NOT NULL
+                    AND c.first_agent_message_at >= c.assigned_at), 0) AS primera_resp_seg,
         round(avgIf(dateDiff('second', c.created_at, c.finished_at),
                     c.finished_at IS NOT NULL), 0)                AS resolucion_seg
     FROM {DB}.fact_conversations AS c
@@ -153,17 +155,54 @@ def resumen_atc_dia(dia: str, equipos=None) -> pd.DataFrame:
 
 
 @st.cache_data(ttl=300)
-def interaccion_dia(dia: str) -> pd.DataFrame:
-    """Tiempo medio de interacción por agente (única fuente: fact_agent_daily)."""
+def interaccion_dia(dia: str, equipos=None) -> pd.DataFrame:
+    """Tiempo medio de interacción por agente = promedio de lo que tarda el
+    agente en responder al cliente dentro de la conversación, acotado a las
+    conversaciones del equipo seleccionado (así no lo contaminan otras colas).
+    Si la consulta por mensajes falla, cae a fact_agent_daily."""
+    col = _col_equipo()
+    filtro = ""
+    if equipos:
+        lst = "', '".join(str(e).lower().replace("'", "") for e in equipos)
+        filtro = f"AND lower({col}) IN ('{lst}')"
     sql = f"""
+    WITH scope AS (
+        SELECT conversation_id
+        FROM {DB}.fact_conversations
+        WHERE toDate(created_at) = toDate('{dia}')
+          AND first_agent_message_at IS NOT NULL
+          {filtro}
+    ),
+    m AS (
+        SELECT
+            agent_name,
+            sender,
+            created_at,
+            any(created_at) OVER (PARTITION BY conversation_id ORDER BY created_at
+                                  ROWS BETWEEN 1 PRECEDING AND 1 PRECEDING) AS prev_at,
+            any(sender)     OVER (PARTITION BY conversation_id ORDER BY created_at
+                                  ROWS BETWEEN 1 PRECEDING AND 1 PRECEDING) AS prev_sender
+        FROM {DB}.fact_agent_messages
+        WHERE toDate(created_at) = toDate('{dia}')
+          AND conversation_id IN (SELECT conversation_id FROM scope)
+    )
     SELECT
-        agent_name              AS agente,
-        avg_response_time_sec   AS interaccion_seg
-    FROM {DB}.fact_agent_daily
-    WHERE toDate(day) = toDate('{dia}')
-      AND chats_handled > 0
+        agent_name                                              AS agente,
+        round(avg(dateDiff('second', prev_at, created_at)), 0)  AS interaccion_seg
+    FROM m
+    WHERE sender = 'AGENT'
+      AND prev_sender != 'AGENT'
+      AND prev_at > toDateTime('1970-01-02')
+    GROUP BY agent_name
     """
-    return q(sql)
+    try:
+        return q(sql)
+    except Exception:
+        return q(f"""
+            SELECT agent_name AS agente, avg_response_time_sec AS interaccion_seg
+            FROM {DB}.fact_agent_daily
+            WHERE toDate(day) = toDate('{dia}') AND chats_handled > 0
+        """)
 
 
 @st.cache_data(ttl=300)

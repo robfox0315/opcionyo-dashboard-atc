@@ -214,7 +214,7 @@ def sfig(fig, h=320):
     if fig.layout.title.text:
         fig.update_layout(title_font=dict(color=OY_TEAL_DARK, size=14))
     else:
-        fig.update_layout(title=None, margin=dict(t=12, b=10, l=10, r=10))
+        fig.update_layout(title_text="", margin=dict(t=12, b=10, l=10, r=10))
     return fig
 
 def gauge(title, val, ref, rng, steps, suffix="", invert=False):
@@ -1187,7 +1187,7 @@ with t_atc:
             st.info("Sin datos de ATC para ese día en el Data Warehouse.")
         else:
             try:
-                _iv = _rd.interaccion_dia(str(_dia))
+                _iv = _rd.interaccion_dia(str(_dia), _eq_sel)
             except Exception:
                 _iv = pd.DataFrame(columns=["agente", "interaccion_seg"])
             m = _base.merge(_iv, on="agente", how="left") if not _iv.empty \
@@ -1253,45 +1253,110 @@ with t_atc:
                                tabla.to_csv(index=False).encode("utf-8"),
                                f"resumen_atc_{_dia}.csv", "text/csv", key="atc_csv")
 
-            # ── Texto listo para Slack ──
+            # ── MENSAJE PARA SLACK (completo, listo para copiar) ──
             _MESES = {1:"enero",2:"febrero",3:"marzo",4:"abril",5:"mayo",6:"junio",7:"julio",
                       8:"agosto",9:"septiembre",10:"octubre",11:"noviembre",12:"diciembre"}
-            _c = lambda ok: "✅" if ok else "❌"
-            _foco = ("Mantengamos el nivel en los cuatro indicadores."
-                     if _ok_n == 4 else
-                     "Nuestro foco de hoy es recuperar los indicadores que quedaron fuera de meta.")
-            _txt = (
-                f"📊 Resultados ATC | {_dia.day} de {_MESES[_dia.month]}\n"
-                f"Buen día, equipo. 💙\n\n"
-                f"Ayer atendimos {tot:,} conversaciones y estos fueron los resultados:\n"
-                f"⭐ Calificación: {('%.2f' % _cal) if not pd.isna(_cal) else '—'} "
-                f"{_c(not pd.isna(_cal) and _cal >= META_RATING)}\n"
-                f"💬 Chats atendidos: {tot:,}\n"
-                f"⏱️ Primera respuesta: {_hms(_fr)[3:]} {_c(not pd.isna(_fr) and _fr <= META_1RESP_S)}\n"
-                f"🕐 Tiempo medio de interacción: {_hms(_in)[3:]} "
-                f"{_c(not pd.isna(_in) and _in <= META_INTER_S)}\n"
-                f"⌛ Tiempo de resolución: {_hms(_re)} "
-                f"{_c(not pd.isna(_re) and _re <= META_RESOL_S)}\n\n"
-                f"Cumplimos {_ok_n} de los 4 indicadores. {_foco}"
-            )
-            st.markdown("##### 📨 Mensaje para Slack")
-            st.caption("Cópialo y pégalo tal cual en el canal.")
-            st.code(_txt, language=None)
 
-            with st.expander("👤 Focos individuales (para añadir al mensaje)"):
-                _lin = []
-                for _, r in tabla.iterrows():
-                    _fallos = []
-                    _rr = r["Calificación"]
-                    if pd.isna(_rr) or _rr < META_RATING:
-                        _fallos.append(f"rating ({'—' if pd.isna(_rr) else _rr})")
-                    if r["Primera respuesta"] != "—" and r["Primera respuesta"] > _hms(META_1RESP_S):
-                        _fallos.append(f"primera respuesta ({r['Primera respuesta'][3:]})")
-                    if r["Tiempo medio interacción"] != "—" and r["Tiempo medio interacción"] > _hms(META_INTER_S):
-                        _fallos.append(f"interacción ({r['Tiempo medio interacción'][3:]})")
-                    _lin.append(f"• {r['Agente']}: " + ("¡Excelente! Cumpliste todos los indicadores."
-                                if not _fallos else "el foco está en " + ", ".join(_fallos) + "."))
-                st.code("\n".join(_lin), language=None)
+            def _corto(s):
+                """MM:SS si es menos de una hora; si no, H:MM:SS."""
+                if s is None or (isinstance(s, float) and pd.isna(s)):
+                    return "—"
+                s = int(round(float(s)))
+                return f"{s//60:02d}:{s%60:02d}" if s < 3600 else f"{s//3600}:{(s%3600)//60:02d}:{s%60:02d}"
+
+            def _num(x, dec=2):
+                return "—" if pd.isna(x) else f"{x:.{dec}f}".replace(".", ",")
+
+            _ok_cal = (not pd.isna(_cal)) and _cal >= META_RATING
+            _ok_fr  = (not pd.isna(_fr))  and _fr <= META_1RESP_S
+            _ok_in  = (not pd.isna(_in))  and _in <= META_INTER_S
+            _ok_re  = (not pd.isna(_re))  and _re <= META_RESOL_S
+            _c = lambda ok: "✅" if ok else "❌"
+
+            _fallidos = [n for n, ok in [("la calificación", _ok_cal),
+                                         ("la primera respuesta", _ok_fr),
+                                         ("el tiempo de interacción", _ok_in),
+                                         ("el tiempo de resolución", _ok_re)] if not ok]
+            _acciones = {
+                "la calificación": "brindar una experiencia excepcional en cada conversación: "
+                                   "validar al cliente, leer el contexto completo y acompañarlo "
+                                   "hasta el cierre de su solicitud",
+                "la primera respuesta": "tomar los chats apenas se asignan para responder dentro "
+                                        "del primer minuto",
+                "el tiempo de interacción": "agilizar las respuestas dentro del chat sin afectar "
+                                            "la calidad de la atención",
+                "el tiempo de resolución": "cerrar los casos el mismo día y hacer seguimiento a "
+                                           "los que quedan abiertos",
+            }
+            if not _fallidos:
+                _narr = ("¡Cumplimos los 4 indicadores! Mantengamos este nivel: constancia en la "
+                         "calidad y en los tiempos de atención.")
+            elif len(_fallidos) == 1:
+                _f = _fallidos[0]
+                _narr = (f"El único indicador fuera de meta fue *{_f.replace('la ', '').replace('el ', '')}*, "
+                         f"por lo que hoy nuestro principal foco debe ser {_acciones[_f]}.")
+            else:
+                _narr = ("Los indicadores fuera de meta fueron " +
+                         ", ".join(_fallidos[:-1]) + f" y {_fallidos[-1]}. "
+                         f"Hoy nuestro foco será {_acciones[_fallidos[0]]}.")
+
+            _txt = (
+                f"📊 *Resultados ATC | {_dia.day} de {_MESES[_dia.month]}*\n"
+                f"Buen día, equipo. 💙\n\n"
+                f"Ayer atendimos *{tot:,} conversaciones* y estos fueron los resultados:\n"
+                f"⭐ Calificación: {_num(_cal)} {_c(_ok_cal)}\n"
+                f"💬 Chats atendidos: {tot:,}\n"
+                f"🕐 Primera respuesta: {_corto(_fr)} {_c(_ok_fr)}\n"
+                f"💭 Tiempo medio de interacción: {_corto(_in)} {_c(_ok_in)}\n"
+                f"⌛ Tiempo de resolución: {_hms(_re)} {_c(_ok_re)}\n\n"
+                f"Cumplimos *{_ok_n} de los 4 indicadores*. {_narr}"
+            )
+
+            # Focos individuales
+            _focos = []
+            for _, r in m.sort_values("chats", ascending=False).iterrows():
+                _rr = pd.to_numeric(r.get("calificacion"), errors="coerce")
+                _rf = pd.to_numeric(r.get("primera_resp_seg"), errors="coerce")
+                _ri = pd.to_numeric(r.get("interaccion_seg"), errors="coerce")
+                _rs = pd.to_numeric(r.get("resolucion_seg"), errors="coerce")
+                _mal = []
+                if pd.isna(_rr) or _rr < META_RATING:
+                    _mal.append(f"el rating ({_num(_rr)})" if not pd.isna(_rr) else "registrar calificaciones")
+                if not pd.isna(_rf) and _rf > META_1RESP_S:
+                    _mal.append(f"la primera respuesta ({_corto(_rf)})")
+                if not pd.isna(_ri) and _ri > META_INTER_S:
+                    _mal.append(f"la interacción ({_corto(_ri)})")
+                if not pd.isna(_rs) and _rs > META_RESOL_S:
+                    _mal.append(f"la resolución ({_hms(_rs)})")
+                if not _mal:
+                    _extra = " y mantuviste un rating de 5" if (not pd.isna(_rr) and _rr >= 5) else ""
+                    _focos.append(f"• *{r['agente']}*: ¡Excelente trabajo! Cumpliste todos "
+                                  f"los indicadores{_extra}.")
+                else:
+                    _bien = []
+                    if not pd.isna(_rr) and _rr >= META_RATING:
+                        _bien.append(f"excelente calidad ({_num(_rr)})")
+                    if not pd.isna(_rs) and _rs <= META_RESOL_S:
+                        _bien.append("buena resolución")
+                    _pre = (", ".join(_bien).capitalize() + ". ") if _bien else ""
+                    _focos.append(f"• *{r['agente']}*: {_pre}El foco está en mejorar "
+                                  + ", ".join(_mal) + ".")
+            _txt_focos = "*Focos individuales*\n" + "\n".join(_focos)
+            _obj = ("🎯 *Objetivo para hoy:* mantener los indicadores en meta y sostener la "
+                    "calidad de la atención." if not _fallidos else
+                    f"🎯 *Objetivo para hoy:* recuperar {_fallidos[0]} y sostener los indicadores "
+                    f"que ya estamos cumpliendo.")
+
+            st.markdown('<div class="sec ok">📨 Mensaje para Slack</div>', unsafe_allow_html=True)
+            cS1, cS2 = st.columns([1, 1])
+            _inc_focos = cS1.toggle("Incluir focos individuales", value=True, key="atc_focos")
+            _inc_obj = cS2.toggle("Incluir objetivo del día", value=True, key="atc_obj")
+            _final = _txt + (("\n\n" + _txt_focos) if _inc_focos else "") + \
+                     (("\n\n" + _obj) if _inc_obj else "")
+            st.caption("Usa el botón de copiar (esquina del bloque) y pégalo en el canal de Slack.")
+            st.code(_final, language=None)
+            st.download_button("⬇️ Descargar mensaje (.txt)", _final.encode("utf-8"),
+                               f"reporte_atc_{_dia}.txt", "text/plain", key="atc_txt")
 
 
 # ╔═══════════════════════════════════════╗
