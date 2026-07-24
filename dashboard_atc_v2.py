@@ -1135,13 +1135,18 @@ with t1:
 #  TAB · RESUMEN ATC (día) — EN VIVO desde el Data Warehouse
 # ╚═══════════════════════════════════════╝
 with t_atc:
-    st.markdown('<div class="sec">📋 Resumen ATC · reporte diario</div>', unsafe_allow_html=True)
+    # Metas del reporte diario (editables aquí)
+    META_1RESP_S = 60      # 00:01:00
+    META_INTER_S = 300     # 00:05:00
+    META_RESOL_S = 7200    # 02:00:00
 
-    def _sec_hms(s):
+    def _hms(s):
         if s is None or (isinstance(s, float) and pd.isna(s)):
             return "—"
         s = int(round(float(s)))
         return f"{s//3600:02d}:{(s%3600)//60:02d}:{s%60:02d}"
+
+    st.markdown('<div class="sec">📋 Resumen ATC · reporte diario</div>', unsafe_allow_html=True)
 
     _dwh_ok = False
     try:
@@ -1156,85 +1161,137 @@ with t_atc:
                     unsafe_allow_html=True)
     else:
         try:
-            _ult = _rd.ultimo_dia_dwh()
-            _hoy = pd.Timestamp(_ult).date() if _ult else pd.Timestamp.today().date()
+            _u = _rd.ultimo_dia_dwh()
+            _hoy = pd.Timestamp(_u).date() if _u else pd.Timestamp.today().date()
         except Exception:
             _hoy = pd.Timestamp.today().date()
-
-        cA, cB = st.columns([1, 3])
-        _dia = cA.date_input("📅 Día", value=_hoy, key="atc_dia")
-        cB.markdown('<div class="info">Datos <b>en vivo</b> desde el Data Warehouse de Treble '
-                    '(retraso máx. 3 h). Colas: SDD + Especialistas + Default. '
-                    'Mismas métricas y fórmula que el panel de Treble.</div>',
-                    unsafe_allow_html=True)
-
         try:
-            _ag = _rd.resumen_atc_dia(str(_dia))
-            _rt = _rd.rating_atc_dia(str(_dia))
+            _eqs = _rd.equipos_disponibles()
+        except Exception:
+            _eqs = []
+        _def = [e for e in _eqs if str(e).lower() in ("sdd", "especialistas", "default")] or _eqs
+
+        cA, cB, cC = st.columns([1.1, 1.6, 1.6])
+        _dia = cA.date_input("📅 Día", value=_hoy, key="atc_dia")
+        _eq_sel = cB.multiselect("👥 Equipo", _eqs, default=_def, key="atc_eq")
+        try:
+            _base = _rd.resumen_atc_dia(str(_dia), _eq_sel)
         except Exception as _e:
-            _ag, _rt = pd.DataFrame(), pd.DataFrame()
+            _base = pd.DataFrame()
             st.markdown(f'<div class="alrt">No se pudo consultar el DWH: {_e}</div>',
                         unsafe_allow_html=True)
+        _ags_op = sorted(_base["agente"].dropna().unique()) if not _base.empty else []
+        _ag_sel = cC.multiselect("👤 Agente", _ags_op, placeholder="Todos", key="atc_ag")
 
-        if _ag.empty:
+        if _base.empty:
             st.info("Sin datos de ATC para ese día en el Data Warehouse.")
         else:
-            m = _ag.merge(_rt[["agent_name", "rating", "calificados"]], on="agent_name", how="left") \
-                   if not _rt.empty else _ag.assign(rating=np.nan, calificados=0)
-            w = m["chats_handled"].astype(float)
-            tot_chats = int(w.sum())
+            try:
+                _iv = _rd.interaccion_dia(str(_dia))
+            except Exception:
+                _iv = pd.DataFrame(columns=["agente", "interaccion_seg"])
+            m = _base.merge(_iv, on="agente", how="left") if not _iv.empty \
+                else _base.assign(interaccion_seg=np.nan)
+            if _ag_sel:
+                m = m[m["agente"].isin(_ag_sel)]
 
-            def _pond(col):
+            w = pd.to_numeric(m["chats"], errors="coerce").fillna(0)
+            tot = int(w.sum())
+
+            def _pond(col, peso=None):
                 v = pd.to_numeric(m[col], errors="coerce")
-                ok = v.notna() & (w > 0)
-                return float((v[ok] * w[ok]).sum() / w[ok].sum()) if ok.any() and w[ok].sum() else np.nan
+                p = w if peso is None else pd.to_numeric(m[peso], errors="coerce").fillna(0)
+                ok = v.notna() & (p > 0)
+                return float((v[ok] * p[ok]).sum() / p[ok].sum()) if ok.any() else np.nan
 
-            _fr = _pond("avg_first_response_sec")
-            _in = _pond("avg_response_time_sec")
-            _re = _pond("avg_resolution_min") * 60 if not pd.isna(_pond("avg_resolution_min")) else np.nan
-            if not _rt.empty and _rt["calificados"].sum() > 0:
-                _rating = float((_rt["rating"].fillna(0) * _rt["calificados"]).sum() /
-                                _rt["calificados"].sum())
-            else:
-                _rating = np.nan
+            _cal = _pond("calificacion", "calificados")
+            _fr, _in, _re = _pond("primera_resp_seg"), _pond("interaccion_seg"), _pond("resolucion_seg")
 
-            st.markdown('<div class="kpi-grid">' +
-                kpi("Chats atendidos", f"{tot_chats:,}", _dia.strftime("%d/%m/%Y"), kind="alt") +
-                kpi("Calificación", f"{_rating:.2f}" if not pd.isna(_rating) else "—",
-                    f"meta ≥{META_RATING}",
-                    kind="ok" if (not pd.isna(_rating) and _rating >= META_RATING) else "warn") +
-                kpi("Primera respuesta", _sec_hms(_fr), "promedio ponderado", kind="ok") +
-                kpi("Tiempo medio interacción", _sec_hms(_in), "métrica oficial Treble", kind="dark") +
-                kpi("Tiempo resolución", _sec_hms(_re), "promedio ponderado", kind="amber") +
-                '</div>', unsafe_allow_html=True)
+            # ── Panel de indicadores (estilo Treble, más limpio) ──
+            k1, k2, k3 = st.columns([1.15, 1, 1.15])
+            with k1:
+                st.markdown('<div class="kpi-grid" style="flex-direction:column">' +
+                    kpi("Chats atendidos", f"{tot:,}", _dia.strftime("%d/%m/%Y"), kind="alt") +
+                    kpi("Primera respuesta", _hms(_fr), f"meta ≤ {_hms(META_1RESP_S)}",
+                        kind="ok" if (not pd.isna(_fr) and _fr <= META_1RESP_S) else "warn") +
+                    '</div>', unsafe_allow_html=True)
+            with k2:
+                st.plotly_chart(gauge("Calificación", 0 if pd.isna(_cal) else _cal, META_RATING, [0, 5],
+                    [{"range": [0, 4.5], "color": "#FADBD8"},
+                     {"range": [4.5, META_RATING], "color": "#FDEBD0"},
+                     {"range": [META_RATING, 5], "color": "#D5F5E3"}]), use_container_width=True)
+            with k3:
+                st.markdown('<div class="kpi-grid" style="flex-direction:column">' +
+                    kpi("Tiempo medio interacción", _hms(_in), f"meta ≤ {_hms(META_INTER_S)}",
+                        kind="ok" if (not pd.isna(_in) and _in <= META_INTER_S) else "warn") +
+                    kpi("Tiempo resolución", _hms(_re), f"meta ≤ {_hms(META_RESOL_S)}",
+                        kind="ok" if (not pd.isna(_re) and _re <= META_RESOL_S) else "warn") +
+                    '</div>', unsafe_allow_html=True)
 
+            _ok_n = sum([(not pd.isna(_cal) and _cal >= META_RATING),
+                         (not pd.isna(_fr) and _fr <= META_1RESP_S),
+                         (not pd.isna(_in) and _in <= META_INTER_S),
+                         (not pd.isna(_re) and _re <= META_RESOL_S)])
+            _cls = "good" if _ok_n == 4 else ("info" if _ok_n >= 3 else "alrt")
+            st.markdown(f'<div class="{_cls}">Cumplimiento del día: <b>{_ok_n} de 4 indicadores</b> · '
+                        f'{len(m)} agentes · equipos: {", ".join(_eq_sel) if _eq_sel else "todos"}</div>',
+                        unsafe_allow_html=True)
+
+            # ── Detalle por agente ──
             st.markdown("##### Detalle por agente")
             tabla = pd.DataFrame({
-                "Agente": m["agent_name"],
-                "Chats Atendidos": m["chats_handled"].astype(int),
-                "Calificación": m["rating"],
-                "Primera respuesta": m["avg_first_response_sec"].apply(_sec_hms),
-                "Tiempo medio interacción": m["avg_response_time_sec"].apply(_sec_hms),
-                "Tiempo resolución": m["avg_resolution_min"].apply(
-                    lambda v: _sec_hms(v * 60) if pd.notna(v) else "—"),
+                "Agente": m["agente"],
+                "Chats Atendidos": pd.to_numeric(m["chats"], errors="coerce").astype("Int64"),
+                "Calificación": pd.to_numeric(m["calificacion"], errors="coerce").round(2),
+                "Primera respuesta": m["primera_resp_seg"].apply(_hms),
+                "Tiempo medio interacción": m["interaccion_seg"].apply(_hms),
+                "Tiempo resolución": m["resolucion_seg"].apply(_hms),
             }).sort_values("Chats Atendidos", ascending=False)
             st.dataframe(tabla, use_container_width=True, hide_index=True,
-                         height=min(560, 60 + 36 * len(tabla)))
-
+                         height=min(520, 60 + 36 * len(tabla)))
             st.download_button("⬇️ Descargar reporte del día (.csv)",
                                tabla.to_csv(index=False).encode("utf-8"),
                                f"resumen_atc_{_dia}.csv", "text/csv", key="atc_csv")
 
-            # Texto listo para pegar en Slack
-            _cum = lambda ok: "✅" if ok else "❌"
-            _txt = (f"📊 Resultados ATC | {_dia:%d de %B}\n"
-                    f"Chats atendidos: {tot_chats:,}\n"
-                    f"⭐ Calificación: {_rating:.2f} {_cum(not pd.isna(_rating) and _rating >= META_RATING)}\n"
-                    f"⏱️ Primera respuesta: {_sec_hms(_fr)} {_cum(not pd.isna(_fr) and _fr <= 60)}\n"
-                    f"💬 Tiempo medio de interacción: {_sec_hms(_in)}\n"
-                    f"⌛ Tiempo de resolución: {_sec_hms(_re)}")
-            with st.expander("📨 Texto listo para el reporte de Slack"):
-                st.code(_txt, language=None)
+            # ── Texto listo para Slack ──
+            _MESES = {1:"enero",2:"febrero",3:"marzo",4:"abril",5:"mayo",6:"junio",7:"julio",
+                      8:"agosto",9:"septiembre",10:"octubre",11:"noviembre",12:"diciembre"}
+            _c = lambda ok: "✅" if ok else "❌"
+            _foco = ("Mantengamos el nivel en los cuatro indicadores."
+                     if _ok_n == 4 else
+                     "Nuestro foco de hoy es recuperar los indicadores que quedaron fuera de meta.")
+            _txt = (
+                f"📊 Resultados ATC | {_dia.day} de {_MESES[_dia.month]}\n"
+                f"Buen día, equipo. 💙\n\n"
+                f"Ayer atendimos {tot:,} conversaciones y estos fueron los resultados:\n"
+                f"⭐ Calificación: {('%.2f' % _cal) if not pd.isna(_cal) else '—'} "
+                f"{_c(not pd.isna(_cal) and _cal >= META_RATING)}\n"
+                f"💬 Chats atendidos: {tot:,}\n"
+                f"⏱️ Primera respuesta: {_hms(_fr)[3:]} {_c(not pd.isna(_fr) and _fr <= META_1RESP_S)}\n"
+                f"🕐 Tiempo medio de interacción: {_hms(_in)[3:]} "
+                f"{_c(not pd.isna(_in) and _in <= META_INTER_S)}\n"
+                f"⌛ Tiempo de resolución: {_hms(_re)} "
+                f"{_c(not pd.isna(_re) and _re <= META_RESOL_S)}\n\n"
+                f"Cumplimos {_ok_n} de los 4 indicadores. {_foco}"
+            )
+            st.markdown("##### 📨 Mensaje para Slack")
+            st.caption("Cópialo y pégalo tal cual en el canal.")
+            st.code(_txt, language=None)
+
+            with st.expander("👤 Focos individuales (para añadir al mensaje)"):
+                _lin = []
+                for _, r in tabla.iterrows():
+                    _fallos = []
+                    _rr = r["Calificación"]
+                    if pd.isna(_rr) or _rr < META_RATING:
+                        _fallos.append(f"rating ({'—' if pd.isna(_rr) else _rr})")
+                    if r["Primera respuesta"] != "—" and r["Primera respuesta"] > _hms(META_1RESP_S):
+                        _fallos.append(f"primera respuesta ({r['Primera respuesta'][3:]})")
+                    if r["Tiempo medio interacción"] != "—" and r["Tiempo medio interacción"] > _hms(META_INTER_S):
+                        _fallos.append(f"interacción ({r['Tiempo medio interacción'][3:]})")
+                    _lin.append(f"• {r['Agente']}: " + ("¡Excelente! Cumpliste todos los indicadores."
+                                if not _fallos else "el foco está en " + ", ".join(_fallos) + "."))
+                st.code("\n".join(_lin), language=None)
 
 
 # ╔═══════════════════════════════════════╗

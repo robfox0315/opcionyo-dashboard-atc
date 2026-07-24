@@ -107,55 +107,63 @@ def ia_semanal(dias: int = 120) -> pd.DataFrame:
 
 
 # ── RESUMEN ATC DIARIO (en vivo · formato del reporte de Yésica) ──
+@st.cache_data(ttl=600)
+def _col_equipo() -> str:
+    cols = columnas("fact_conversations")
+    return "team_name" if "team_name" in cols else "tag_name"
+
+
+@st.cache_data(ttl=600)
+def equipos_disponibles() -> list:
+    col = _col_equipo()
+    try:
+        d = q(f"SELECT DISTINCT {col} AS eq FROM {DB}.fact_conversations "
+              f"WHERE created_at >= now() - INTERVAL 60 DAY ORDER BY eq")
+        return [x for x in d["eq"].tolist() if x and str(x).strip()]
+    except Exception:
+        return []
+
+
 @st.cache_data(ttl=300)
-def resumen_atc_dia(dia: str) -> pd.DataFrame:
-    """Por agente para un día, con las MISMAS métricas y fórmula que Treble:
-       chats_handled · csat · avg_first_response_sec · avg_response_time_sec
-       (= Tiempo medio interacción) · avg_resolution_min.
-       Solo agentes que ese día atendieron chats de las colas ATC."""
+def resumen_atc_dia(dia: str, equipos=None) -> pd.DataFrame:
+    """Detalle por agente de UN día, calculado desde las conversaciones del
+    equipo seleccionado (igual que el filtro 'Equipo' del panel de Treble)."""
+    col = _col_equipo()
+    filtro = ""
+    if equipos:
+        lst = "', '".join(str(e).lower().replace("'", "") for e in equipos)
+        filtro = f"AND lower(c.{col}) IN ('{lst}')"
     sql = f"""
-    WITH atc AS (
-        SELECT DISTINCT agent_name
-        FROM {DB}.fact_conversations
-        WHERE toDate(created_at) = toDate('{dia}')
-          AND first_agent_message_at IS NOT NULL
-          AND lower(tag_name) IN ('{_tags_sql()}')
-    )
     SELECT
-        agent_name,
-        chats_handled,
-        avg_first_response_sec,
-        avg_response_time_sec,
-        avg_resolution_min,
-        csat_avg
-    FROM {DB}.fact_agent_daily
-    WHERE toDate(day) = toDate('{dia}')
-      AND chats_handled > 0
-      AND agent_name IN (SELECT agent_name FROM atc)
-    ORDER BY chats_handled DESC
+        c.agent_name                                              AS agente,
+        count()                                                   AS chats,
+        countIf(c.rating > 0)                                     AS calificados,
+        round(avgIf(c.rating, c.rating > 0), 2)                   AS calificacion,
+        round(avgIf(c.first_response_sec, c.first_response_sec >= 0), 0) AS primera_resp_seg,
+        round(avgIf(dateDiff('second', c.created_at, c.finished_at),
+                    c.finished_at IS NOT NULL), 0)                AS resolucion_seg
+    FROM {DB}.fact_conversations AS c
+    WHERE toDate(c.created_at) = toDate('{dia}')
+      AND c.first_agent_message_at IS NOT NULL
+      {filtro}
+    GROUP BY c.agent_name
+    ORDER BY chats DESC
     """
     return q(sql)
 
 
 @st.cache_data(ttl=300)
-def rating_atc_dia(dia: str) -> pd.DataFrame:
-    """Rating real por agente (sobre chats calificados) para ese día."""
+def interaccion_dia(dia: str) -> pd.DataFrame:
+    """Tiempo medio de interacción por agente (única fuente: fact_agent_daily)."""
     sql = f"""
     SELECT
-        agent_name,
-        count()                                 AS chats,
-        countIf(rating > 0)                     AS calificados,
-        round(avgIf(rating, rating > 0), 2)     AS rating_prom
-    FROM {DB}.fact_conversations
-    WHERE toDate(created_at) = toDate('{dia}')
-      AND first_agent_message_at IS NOT NULL
-      AND lower(tag_name) IN ('{_tags_sql()}')
-    GROUP BY agent_name
+        agent_name              AS agente,
+        avg_response_time_sec   AS interaccion_seg
+    FROM {DB}.fact_agent_daily
+    WHERE toDate(day) = toDate('{dia}')
+      AND chats_handled > 0
     """
-    d = q(sql)
-    if not d.empty and "rating_prom" in d.columns:
-        d = d.rename(columns={"rating_prom": "rating"})
-    return d
+    return q(sql)
 
 
 @st.cache_data(ttl=300)
