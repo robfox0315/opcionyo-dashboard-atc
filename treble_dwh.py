@@ -143,16 +143,19 @@ def rating_atc_dia(dia: str) -> pd.DataFrame:
     sql = f"""
     SELECT
         agent_name,
-        count()                            AS chats,
-        countIf(rating > 0)                AS calificados,
-        round(avgIf(rating, rating > 0), 2) AS rating
+        count()                                 AS chats,
+        countIf(rating > 0)                     AS calificados,
+        round(avgIf(rating, rating > 0), 2)     AS rating_prom
     FROM {DB}.fact_conversations
     WHERE toDate(created_at) = toDate('{dia}')
       AND first_agent_message_at IS NOT NULL
       AND lower(tag_name) IN ('{_tags_sql()}')
     GROUP BY agent_name
     """
-    return q(sql)
+    d = q(sql)
+    if not d.empty and "rating_prom" in d.columns:
+        d = d.rename(columns={"rating_prom": "rating"})
+    return d
 
 
 @st.cache_data(ttl=300)
@@ -185,45 +188,45 @@ def cargar_conversaciones(dias: int = 90) -> pd.DataFrame:
     def pick(*cands, default="''"):
         for c in cands:
             if has(c):
-                return c
+                return f"c.{c}"
         return default
 
     _labels = pick("labels", "label_names", "label_name", "labels_names", "tags", default="''")
     _contact = pick("contact_name", "contact", "customer_name", default="''")
     _phone = pick("contact_wa_id", "cellphone", "phone", "contact_phone", default="''")
-    _lastmsg = pick("last_message_at", "last_message", default="finished_at")
+    _lastmsg = pick("last_message_at", "last_message", default="c.finished_at")
     _sender = pick("last_message_sender", "last_sender", default="''")
-    _transfer = ("last_transfer_from" if has("last_transfer_from")
-                 else ("if(transfer_count > 0, 'transferido', NULL)" if has("transfer_count") else "NULL"))
+    _transfer = ("c.last_transfer_from" if has("last_transfer_from")
+                 else ("if(c.transfer_count > 0, 'transferido', NULL)" if has("transfer_count") else "NULL"))
     _finish = pick("finish_type", "finished_by", default="''")
-    _assigned = pick("assigned_at", "first_assignment_at", default="created_at")
+    _assigned = pick("assigned_at", "first_assignment_at", default="c.created_at")
 
     sql = f"""
     SELECT
-        toString({_phone})                                             AS phone,
-        toString({_contact})                                           AS contact,
-        toString(tag_name)                                             AS tag,
-        toString(agent_name)                                           AS agent,
-        formatDateTime(created_at,  '%Y-%m-%d %H:%M:%S')               AS created_at,
-        formatDateTime({_assigned}, '%Y-%m-%d %H:%M:%S')               AS assigned_at,
-        if(finished_at IS NULL, '',
-           formatDateTime(finished_at, '%Y-%m-%d %H:%M:%S'))           AS finished_at,
-        toString({_transfer})                                          AS last_transfer_from,
-        if(first_agent_message_at IS NULL, '',
-           formatDateTime(first_agent_message_at, '%Y-%m-%d %H:%M:%S')) AS agent_first_message,
+        toString({_phone})                                              AS phone,
+        toString({_contact})                                            AS contact,
+        toString(c.tag_name)                                            AS tag,
+        toString(c.agent_name)                                          AS agent,
+        formatDateTime(c.created_at, '%Y-%m-%d %H:%M:%S')               AS created_at,
+        formatDateTime({_assigned}, '%Y-%m-%d %H:%M:%S')                AS assigned_at,
+        if(c.finished_at IS NULL, '',
+           formatDateTime(c.finished_at, '%Y-%m-%d %H:%M:%S'))          AS finished_at,
+        toString({_transfer})                                           AS last_transfer_from,
+        if(c.first_agent_message_at IS NULL, '',
+           formatDateTime(c.first_agent_message_at, '%Y-%m-%d %H:%M:%S')) AS agent_first_message,
         if({_lastmsg} IS NULL, '',
-           formatDateTime({_lastmsg}, '%Y-%m-%d %H:%M:%S'))            AS last_message,
-        toString({_sender})                                            AS last_message_sender,
-        formatDateTime(toDateTime(greatest(dateDiff('second', created_at,
-            ifNull(finished_at, created_at)), 0), 'UTC'), '%H:%M:%S')  AS duration,
-        if(rating > 0, toString(rating), '-')                          AS rating,
-        toString(status)                                               AS status,
-        toString({_finish})                                            AS finish_type,
-        formatDateTime(toDateTime(greatest(toInt64(ifNull(first_response_sec, 0)), 0),
-                       'UTC'), '%H:%M:%S')  AS agent_first_message_from_allocation,
-        toString({_labels})                                            AS labels
-    FROM {DB}.fact_conversations
-    WHERE created_at >= now() - INTERVAL {dias} DAY
+           formatDateTime({_lastmsg}, '%Y-%m-%d %H:%M:%S'))             AS last_message,
+        toString({_sender})                                             AS last_message_sender,
+        formatDateTime(toDateTime(greatest(dateDiff('second', c.created_at,
+            ifNull(c.finished_at, c.created_at)), 0), 'UTC'), '%H:%M:%S') AS duration,
+        if(c.rating > 0, toString(c.rating), '-')                       AS rating,
+        toString(c.status)                                              AS status,
+        toString({_finish})                                             AS finish_type,
+        formatDateTime(toDateTime(greatest(toInt64(ifNull(c.first_response_sec, 0)), 0),
+                       'UTC'), '%H:%M:%S')   AS agent_first_message_from_allocation,
+        toString({_labels})                                             AS labels
+    FROM {DB}.fact_conversations AS c
+    WHERE c.created_at >= now() - INTERVAL {dias} DAY
     """
     df = q(sql)
     if not df.empty:
