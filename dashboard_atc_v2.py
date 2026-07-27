@@ -608,8 +608,8 @@ st.markdown("""
 <div class="oy-header">
   <div class="oy-logo">opción<span>yo</span></div>
   <div class="oy-htxt">
-    <p class="oy-htitle">Dashboard de Gestión · Atención al Cliente</p>
-    <p class="oy-hsub">Vista gerencial · datos Treble + HubSpot en vivo</p>
+    <p class="oy-htitle">Atención al Cliente</p>
+    <p class="oy-hsub">Panel de gestión</p>
   </div>
 </div>""", unsafe_allow_html=True)
 
@@ -641,7 +641,6 @@ if st.session_state["df_historico"].empty:
 # ── FUENTE HÍBRIDA: histórico CSV + últimos 90 días EN VIVO del Data Warehouse ──
 # El DWH es la fuente autoritativa (datos exactos de Treble, retraso máx. 3 h) y
 # gana en el solape; el CSV aporta la historia anterior a la ventana del DWH.
-_FUENTE_TXT = "📦 Histórico (CSV)"
 try:
     import treble_dwh as _tw
     if _tw.dwh_activo():
@@ -655,8 +654,6 @@ try:
             _mix = (_mix.sort_values("_o").drop_duplicates("_k", keep="last")
                         .drop(columns=["_o", "_k"]))
             st.session_state["df_historico"] = _mix
-            _FUENTE_TXT = (f"🟢 Data Warehouse en vivo ({len(_live):,} conversaciones · "
-                           f"últimos 90 días) + histórico CSV")
 except Exception:
     pass   # sin DWH el dashboard sigue funcionando con el CSV
 
@@ -665,9 +662,6 @@ try:
 except Exception as e:
     st.error(f"Error procesando datos: {e}")
     st.stop()
-
-st.caption(f"Fuente de datos: {_FUENTE_TXT} · actualizado "
-           f"{df_raw['created_at'].max():%d/%m/%Y %H:%M}")
 
 # Sin filtros globales: cada pestaña define su propio rango de fechas.
 ags = colas = regs = labs = ests = []
@@ -967,8 +961,6 @@ with t1:
     _fi, _ff, _ags, _colas = filtro_fecha("resumen", con_agente=False)
     _dfr = df_raw[(df_raw["created_at"].dt.date >= _fi) &
                   (df_raw["created_at"].dt.date <= _ff)]
-    st.caption(f"📅 {_fi:%d/%m/%Y} → {_ff:%d/%m/%Y} · vista de gerencia · "
-               f"fuente: treble · chats atendidos (colas ATC: SDD + Especialistas + Default)")
 
     rdA = resp_preparar(_dfr)
     rgA = rdA[rdA["tag"].fillna("").str.lower().isin(["default", "especialistas", "sdd"])]
@@ -1002,10 +994,6 @@ with t1:
                 return ""
             d = cur - prv
             return f"{'▲' if d >= 0 else '▼'} {abs(d):.2f}{unit} vs sem. ant."
-
-        cS2.markdown(f'<div class="info">Cierre de la semana del <b>{wk_sel}</b> · '
-                     f'<b>{int(row["Chats"]):,}</b> chats atendidos (colas ATC)</div>',
-                     unsafe_allow_html=True)
 
         st.markdown('<div class="kpi-grid">' +
             kpi("Chats atendidos", f"{int(row['Chats']):,}",
@@ -1051,10 +1039,7 @@ with t1:
 
         st.divider()
 
-        st.markdown('<div class="sec">📊 Histórico Semanal · Global (ATC)</div>', unsafe_allow_html=True)
-        st.markdown('<div class="info">Réplica de la hoja «Histórico semanal» del Excel de gerencia '
-                    '(sin filas de IA). Columnas = semanas + cierres mensuales.</div>',
-                    unsafe_allow_html=True)
+        st.markdown('<div class="sec">📊 Histórico Semanal · Global</div>', unsafe_allow_html=True)
         _PICO = ["Día con más chats (promedio)", "Horas con más chats (promedio)",
                  "Día y hora con más chats (récord)"]
 
@@ -1116,14 +1101,11 @@ with t1:
             pass  # sin DWH, la tabla queda con interacción en blanco (como el CSV)
 
         st.dataframe(tab_glob, use_container_width=True, height=620)
-        st.caption("«Tiempo medio interacción» queda en blanco: Treble lo calcula a nivel de "
-                   "mensajes (no viene en el CSV) — se copia de Treble o se resolverá con el DWH.")
         st.download_button("⬇️ Descargar Histórico Semanal Global (.csv)",
                            tab_glob.to_csv().encode("utf-8"),
                            "historico_semanal_global.csv", "text/csv", key="rg_csv")
 
         st.markdown('<div class="sec blue">👥 Agente · Histórico Semanal</div>', unsafe_allow_html=True)
-        st.caption("Réplica de la hoja «AgenteHistorico semanal»: 10 métricas por agente.")
         _pres = set(rgA["agent"].unique())
         for etq, real in RESP_AGENTES.items():
             if real not in _pres:
@@ -1156,9 +1138,7 @@ with t_atc:
         _dwh_ok = False
 
     if not _dwh_ok:
-        st.markdown('<div class="alrt">Esta pestaña se alimenta <b>en vivo</b> del Data Warehouse '
-                    'de Treble. Configura <code>[treble_dwh]</code> en Secrets para activarla.</div>',
-                    unsafe_allow_html=True)
+        st.info("Conecta el Data Warehouse en Secrets para ver el reporte diario.")
     else:
         try:
             _u = _rd.ultimo_dia_dwh()
@@ -1353,7 +1333,6 @@ with t_atc:
             _inc_obj = cS2.toggle("Incluir objetivo del día", value=True, key="atc_obj")
             _final = _txt + (("\n\n" + _txt_focos) if _inc_focos else "") + \
                      (("\n\n" + _obj) if _inc_obj else "")
-            st.caption("Usa el botón de copiar (esquina del bloque) y pégalo en el canal de Slack.")
             st.code(_final, language=None)
             st.download_button("⬇️ Descargar mensaje (.txt)", _final.encode("utf-8"),
                                f"reporte_atc_{_dia}.txt", "text/plain", key="atc_txt")
@@ -1603,8 +1582,6 @@ with t3:
     with cd2:
         # Obs 4: Tabla solo con churn real (sin +24hrs)
         st.subheader("🔁 Clientes con churn de plan repetido")
-        st.caption("Solo clientes con etiqueta 'Cancelar plan' o 'Reembolso' — "
-                   "no incluye cancelaciones de sesión")
         canc_cli = []
         # Obs 4: filtrar solo es_churn (no es_cancel que incluye +24hrs)
         for ph, g in df[df["es_churn"]].groupby("phone"):
@@ -1618,8 +1595,6 @@ with t3:
             cc_df = pd.DataFrame(canc_cli).sort_values("Cancelaciones",ascending=False).head(15)
             # Obs 5: link a explorador de chats
             st.dataframe(cc_df, use_container_width=True, hide_index=True, height=300)
-            st.caption("💡 Para ver los chats individuales de un cliente, "
-                       "copia su teléfono y pégalo en el buscador de la pestaña 📋 Explorador de Chats")
             st.download_button("⬇️ CSV churn de plan",
                                cc_df.to_csv(index=False).encode(),
                                "churn_plan.csv","text/csv")
@@ -1691,8 +1666,6 @@ with t4:
         yaxis={"categoryorder":"array",
                "categoryarray":["< 1 min","1–5 min","5–30 min","> 30 min"]})
     st.plotly_chart(sfig(fig, 240), use_container_width=True)
-    st.caption("🟢 Verde = rápido (bueno) · 🔴 Rojo = lento (problema). "
-               "La barra de <1 min es verde porque el 96.7% de los chats se asigna en menos de 1 minuto — eso es excelente.")
 
     # KPI INVISIBLE #2 — Chats fantasma
     st.markdown(f'<div class="invis">🔮 <b>KPI INVISIBLE #2 — Chats Fantasma</b><br>'
@@ -1990,7 +1963,6 @@ with t7:
     ca1, ca2 = st.columns(2)
     with ca1:
         st.subheader("Por qué llaman los clientes recurrentes")
-        st.caption("Fuente: columna labels · clientes con ≥2 contactos en el período")
         rec_ph2 = set(contactos[contactos >= 2].index)
         rexp_c  = (df[df["phone"].isin(rec_ph2)]["labels"]
                    .fillna("Sin etiqueta").str.split(r",\s*").explode().str.strip())
@@ -2003,7 +1975,6 @@ with t7:
         st.plotly_chart(sfig(fig_rc, 420), use_container_width=True)
     with ca2:
         st.subheader("¿Cuántas veces contactan?")
-        st.caption("Fuente: columna phone · distribución de frecuencia por cliente")
         freq_bins = pd.cut(contactos, bins=[0,1,2,5,10,20,999],
                            labels=["1 contacto","2","3–5","6–10","11–20",">20"])
         freq_df = freq_bins.value_counts().sort_index().reset_index()
@@ -2017,7 +1988,6 @@ with t7:
         st.plotly_chart(sfig(fig_freq, 420), use_container_width=True)
 
     st.subheader("¿Los clientes que más llaman califican diferente?")
-    st.caption("Fuente: columna rating · comparativa de satisfacción según frecuencia de contacto")
     df_freq = df.copy()
     df_freq["freq_cliente"] = df_freq["phone"].map(contactos)
     df_freq["bucket_freq"] = pd.cut(df_freq["freq_cliente"],
@@ -2043,13 +2013,6 @@ with t8:
     globals().update(_ctx(_fi, _ff, _ags, _colas))
     st.markdown('<div class="sec">📋 Explorador de Chats (detalle individual)</div>',
                 unsafe_allow_html=True)
-    st.markdown(
-        '<div class="info"><b>¿Qué ves aquí?</b> Cada fila es una conversación del CSV. '
-        'Filtra por cliente, teléfono o etiqueta. '
-        '<code>TPR (min)</code> = tiempo desde asignación hasta primer mensaje del agente · '
-        '<code>Handle (min)</code> = tiempo real activo (primer → último mensaje) · '
-        '<code>Fantasma</code> = último mensaje fue del cliente, no del agente. '
-        'Descarga el resultado para análisis externo.</div>', unsafe_allow_html=True)
 
     st.markdown(
         f'<div class="invis">🔮 <b>KPI INVISIBLE #6 — Handle Time Activo Real</b><br>'
@@ -2113,7 +2076,7 @@ with t9:
     globals().update(_ctx(_fi, _ff, _ags, _colas))
     st.markdown('<div class="sec">💡 Insights & Recomendaciones Estratégicas</div>',
                 unsafe_allow_html=True)
-    st.caption(f"Basado en análisis de {N:,} chats · {f_ini} → {f_fin} · Para uso estratégico del equipo directivo")
+    st.caption(f"{N:,} chats · {f_ini} → {f_fin}")
 
     # KPI rápido banner
     st.markdown('<div class="kpi-grid">' +
@@ -2273,18 +2236,6 @@ with t_aj:
     globals().update(_ctx(_fi, _ff, _ags, _colas))
     st.markdown('<div class="sec">⚙️ Ajuste de Calificaciones</div>',
                 unsafe_allow_html=True)
-    st.markdown(
-        '<div class="info">'
-        '<b>¿Para qué sirve esta pestaña?</b><br>'
-        'A veces un cliente califica bajo no por el trabajo del agente, sino porque: '
-        'respondió "1" sin querer a una pregunta del bot, tuvo un problema con la plataforma, '
-        'o su insatisfacción es con el servicio en general y no con la atención. '
-        '<br><br>'
-        'Aquí puedes <b>excluir esas calificaciones del promedio</b> registrando el motivo. '
-        'Los chats excluidos <b>no se borran</b> — solo se sacan del cálculo del rating. '
-        'El cambio persiste mientras no recargues la página. '
-        'Puedes descargarlo en CSV para llevar un registro histórico.'
-        '</div>', unsafe_allow_html=True)
 
     n_ajustes = sum(1 for v in st.session_state["ajustes_rating"].values() if v.get("excluir"))
     n_ajust_mes = int(df["rating_ajustado"].sum()) if "rating_ajustado" in df.columns else 0
@@ -2446,14 +2397,6 @@ with t_esp:
     globals().update(_ctx(_fi, _ff, _ags, _colas))
     st.markdown('<div class="sec amb">🎓 Especialistas · seguimiento de calificaciones bajas</div>',
                 unsafe_allow_html=True)
-    st.markdown(
-        '<div class="info"><b>¿Para qué sirve?</b><br>'
-        'Detecta qué <b>especialistas calificaron bajo</b> y quiénes lo hacen de forma '
-        'repetida, para contactarlos, hacer una encuesta y entender en qué mejorar. '
-        'Incluye una señal clave: especialistas que calificaron bajo y luego '
-        '<b>dejaron de calificar</b> (descontento silencioso = riesgo de fuga).<br>'
-        'Muestra la cola completa ignorando los filtros de fecha del panel.</div>',
-        unsafe_allow_html=True)
 
     # ── Controles ──────────────────────────────────────────────
     colas_disp = sorted(df_raw["tag"].dropna().unique()) if "tag" in df_raw.columns else []
@@ -2571,7 +2514,4 @@ with t_esp:
 
 # ── Footer ──────────────────────────────────────────────────────────
 st.divider()
-st.caption(f"Opción Yo · Dashboard ATC v3 · {N:,} chats analizados · "
-           f"Metas: Calif≥{META_RATING} · TPR≤{fmt_min(META_TPR)} · "
-           f"SLA2≥{META_SLA2}% · Churn≤{META_CHURN}% · "
-           f"Streamlit + Plotly · Datos: treble.csv")
+st.caption(f"Opción Yo · Atención al Cliente · actualizado {df_raw['created_at'].max():%d/%m/%Y %H:%M}")

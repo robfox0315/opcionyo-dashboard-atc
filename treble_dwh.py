@@ -115,10 +115,12 @@ def _col_equipo() -> str:
 
 @st.cache_data(ttl=600)
 def equipos_disponibles() -> list:
+    """Solo las colas ATC (SDD, Especialistas, Default) que existan — nunca otras."""
     col = _col_equipo()
     try:
         d = q(f"SELECT DISTINCT {col} AS eq FROM {DB}.fact_conversations "
-              f"WHERE created_at >= now() - INTERVAL 60 DAY ORDER BY eq")
+              f"WHERE created_at >= now() - INTERVAL 60 DAY "
+              f"AND lower({col}) IN ('{_tags_sql()}') ORDER BY eq")
         return [x for x in d["eq"].tolist() if x and str(x).strip()]
     except Exception:
         return []
@@ -126,13 +128,16 @@ def equipos_disponibles() -> list:
 
 @st.cache_data(ttl=300)
 def resumen_atc_dia(dia: str, equipos=None) -> pd.DataFrame:
-    """Detalle por agente de UN día, calculado desde las conversaciones del
-    equipo seleccionado (igual que el filtro 'Equipo' del panel de Treble)."""
+    """Detalle por agente de UN día. SIEMPRE acotado a las colas ATC
+    (SDD + Especialistas + Default); 'equipos' solo refina dentro de ATC.
+    Nunca mezcla agentes de otras áreas."""
     col = _col_equipo()
-    filtro = ""
     if equipos:
-        lst = "', '".join(str(e).lower().replace("'", "") for e in equipos)
-        filtro = f"AND lower(c.{col}) IN ('{lst}')"
+        lst = "', '".join(str(e).lower().replace("'", "") for e in equipos
+                          if str(e).lower() in ("sdd", "especialistas", "default"))
+        scope = f"lower(c.{col}) IN ('{lst}')" if lst else f"lower(c.{col}) IN ('{_tags_sql()}')"
+    else:
+        scope = f"lower(c.{col}) IN ('{_tags_sql()}')"
     sql = f"""
     SELECT
         c.agent_name                                              AS agente,
@@ -147,7 +152,7 @@ def resumen_atc_dia(dia: str, equipos=None) -> pd.DataFrame:
     FROM {DB}.fact_conversations AS c
     WHERE toDate(c.created_at) = toDate('{dia}')
       AND c.first_agent_message_at IS NOT NULL
-      {filtro}
+      AND {scope}
     GROUP BY c.agent_name
     ORDER BY chats DESC
     """
