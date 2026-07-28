@@ -68,19 +68,58 @@ def probar_conexion() -> tuple:
 # ── TIEMPO MEDIO DE INTERACCIÓN (oficial · fact_agent_daily) ──────
 @st.cache_data(ttl=600)
 def interaccion_oficial_semanal(dias: int = 120) -> pd.DataFrame:
-    """Interacción EXACTA de Treble = avg_response_time_sec de fact_agent_daily
-    (métrica ya calculada por Treble), ponderada por chats atendidos y por semana."""
+    """Interacción semanal ATC con el MISMO método que el reporte diario:
+    tiempo que tarda el agente en responder al cliente dentro del chat, acotado
+    a las conversaciones de las colas ATC. Fallback a fact_agent_daily (agentes
+    ATC) si la consulta por mensajes tarda demasiado."""
+    col = _col_equipo()
+    tags = _tags_sql()
     sql = f"""
-    SELECT
-        toStartOfWeek(day, 1) AS semana,
-        round(medianIf(avg_response_time_sec, avg_response_time_sec > 0), 0) AS interaccion_seg
-    FROM {DB}.fact_agent_daily
-    WHERE day >= now() - INTERVAL {dias} DAY
-      AND chats_handled > 0
+    WITH scope AS (
+        SELECT conversation_id, toStartOfWeek(created_at, 1) AS semana
+        FROM {DB}.fact_conversations
+        WHERE created_at >= now() - INTERVAL {dias} DAY
+          AND first_agent_message_at IS NOT NULL
+          AND lower({col}) IN ('{tags}')
+    ),
+    msg AS (
+        SELECT
+            s.semana AS semana,
+            am.sender AS sender,
+            am.created_at AS at,
+            any(am.created_at) OVER (PARTITION BY am.conversation_id ORDER BY am.created_at
+                                     ROWS BETWEEN 1 PRECEDING AND 1 PRECEDING) AS prev_at,
+            any(am.sender)    OVER (PARTITION BY am.conversation_id ORDER BY am.created_at
+                                     ROWS BETWEEN 1 PRECEDING AND 1 PRECEDING) AS prev_sender
+        FROM {DB}.fact_agent_messages AS am
+        INNER JOIN scope AS s ON am.conversation_id = s.conversation_id
+        WHERE am.created_at >= now() - INTERVAL {dias} DAY
+    )
+    SELECT semana, round(avg(dateDiff('second', prev_at, at)), 0) AS interaccion_seg
+    FROM msg
+    WHERE sender = 'AGENT' AND prev_sender != 'AGENT' AND prev_at > toDateTime('1970-01-02')
     GROUP BY semana
     ORDER BY semana
     """
-    return q(sql)
+    try:
+        return q(sql)
+    except Exception:
+        return q(f"""
+        WITH atc AS (
+            SELECT DISTINCT agent_name, toStartOfWeek(created_at, 1) AS semana
+            FROM {DB}.fact_conversations
+            WHERE created_at >= now() - INTERVAL {dias} DAY
+              AND first_agent_message_at IS NOT NULL
+              AND lower({col}) IN ('{tags}')
+        )
+        SELECT toStartOfWeek(d.day, 1) AS semana,
+               round(medianIf(d.avg_response_time_sec, d.avg_response_time_sec > 0), 0) AS interaccion_seg
+        FROM {DB}.fact_agent_daily AS d
+        INNER JOIN atc AS a
+            ON d.agent_name = a.agent_name AND toStartOfWeek(d.day, 1) = a.semana
+        WHERE d.day >= now() - INTERVAL {dias} DAY AND d.chats_handled > 0
+        GROUP BY semana ORDER BY semana
+        """)
 
 
 # ── DATOS DE IA / BOT (desde fact_sessions) ──────────────────────

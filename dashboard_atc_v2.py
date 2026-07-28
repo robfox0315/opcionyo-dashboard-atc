@@ -1161,7 +1161,8 @@ with t_atc:
             _eqs = _rd.equipos_disponibles()
         except Exception:
             _eqs = []
-        _def = [e for e in _eqs if str(e).lower() in ("sdd", "especialistas", "default")] or _eqs
+        _def = ([e for e in _eqs if str(e).lower() == "default"] or
+                [e for e in _eqs if str(e).lower() in ("sdd", "especialistas", "default")] or _eqs)
 
         cA, cB, cC = st.columns([1.1, 1.6, 1.6])
         _dia = cA.date_input("📅 Día", value=_hoy, key="atc_dia")
@@ -1714,9 +1715,6 @@ with t4:
             fig.update_traces(texttemplate="%{text:.3f}", textposition="outside")
             fig.add_hline(y=META_RATING, line_dash="dash", line_color=OY_TEAL)
             st.plotly_chart(sfig(fig,380), use_container_width=True)
-            st.caption("Correlación TPR vs Rating: casi nula (r≈-0.02). El cliente no penaliza mucho el tiempo — "
-                       "pero >30min sí baja el rating de 4.78 → 4.62.")
-
 
 # ╔═══════════════════════════════════════╗
 #  TAB 5 — RENDIMIENTO AGENTES
