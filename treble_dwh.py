@@ -269,13 +269,18 @@ def cargar_conversaciones(dias: int = 90) -> pd.DataFrame:
         if({_lastmsg} IS NULL, '',
            formatDateTime({_lastmsg}, '%Y-%m-%d %H:%M:%S'))             AS last_message,
         toString({_sender})                                             AS last_message_sender,
-        formatDateTime(toDateTime(greatest(dateDiff('second', c.created_at,
-            ifNull(c.finished_at, c.created_at)), 0), 'UTC'), '%H:%M:%S') AS duration,
+        concat(leftPad(toString(intDiv(greatest(dateDiff('second', c.created_at,
+                   ifNull(c.finished_at, c.created_at)), 0), 3600)), 2, '0'), ':',
+               leftPad(toString(intDiv(greatest(dateDiff('second', c.created_at,
+                   ifNull(c.finished_at, c.created_at)), 0) % 3600, 60)), 2, '0'), ':',
+               leftPad(toString(greatest(dateDiff('second', c.created_at,
+                   ifNull(c.finished_at, c.created_at)), 0) % 60), 2, '0'))    AS duration,
         if(c.rating > 0, toString(c.rating), '-')                       AS rating,
         toString(c.status)                                              AS status,
         toString({_finish})                                             AS finish_type,
-        formatDateTime(toDateTime(greatest(toInt64(ifNull(c.first_response_sec, 0)), 0),
-                       'UTC'), '%H:%M:%S')   AS agent_first_message_from_allocation,
+        concat(leftPad(toString(intDiv(greatest(toInt64(ifNull(c.first_response_sec, 0)), 0), 3600)), 2, '0'), ':',
+               leftPad(toString(intDiv(greatest(toInt64(ifNull(c.first_response_sec, 0)), 0) % 3600, 60)), 2, '0'), ':',
+               leftPad(toString(greatest(toInt64(ifNull(c.first_response_sec, 0)), 0) % 60), 2, '0')) AS agent_first_message_from_allocation,
         toString({_labels})                                             AS labels
     FROM {DB}.fact_conversations AS c
     WHERE c.created_at >= now() - INTERVAL {dias} DAY

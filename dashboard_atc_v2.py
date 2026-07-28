@@ -639,29 +639,41 @@ if st.session_state["df_historico"].empty:
     st.stop()
 
 # ── FUENTE HÍBRIDA: histórico CSV + últimos 90 días EN VIVO del Data Warehouse ──
-# El DWH es la fuente autoritativa (datos exactos de Treble, retraso máx. 3 h) y
-# gana en el solape; el CSV aporta la historia anterior a la ventana del DWH.
+_dwh_estado = None
 try:
     import treble_dwh as _tw
     if _tw.dwh_activo():
         _live = _tw.cargar_conversaciones(90)
         if not _live.empty:
             _base = st.session_state["df_historico"].copy()
-            _cols = [c for c in _base.columns if c in _live.columns] or list(_live.columns)
             _base["_o"], _live["_o"] = 0, 1          # el DWH gana
             _mix = pd.concat([_base, _live], ignore_index=True)
             _mix["_k"] = _mix["phone"].astype(str) + "|" + _mix["created_at"].astype(str)
             _mix = (_mix.sort_values("_o").drop_duplicates("_k", keep="last")
                         .drop(columns=["_o", "_k"]))
             st.session_state["df_historico"] = _mix
-except Exception:
-    pass   # sin DWH el dashboard sigue funcionando con el CSV
+            _dwh_estado = ("ok", len(_live))
+        else:
+            _dwh_estado = ("vacio", 0)
+    else:
+        _dwh_estado = ("inactivo", 0)
+except Exception as _e:
+    _dwh_estado = ("error", f"{type(_e).__name__}: {str(_e)[:400]}")
 
 try:
     df_raw = load_data(io.StringIO(st.session_state["df_historico"].to_csv(index=False)))
 except Exception as e:
     st.error(f"Error procesando datos: {e}")
     st.stop()
+
+# Aviso SOLO si la actualización en vivo falló (para no dejar datos viejos en silencio)
+if _dwh_estado and _dwh_estado[0] == "error":
+    st.warning(f"⚠️ No se pudo actualizar en vivo desde el Data Warehouse. "
+               f"Mostrando histórico hasta {df_raw['created_at'].max():%d/%m/%Y}. "
+               f"Detalle: {_dwh_estado[1]}")
+elif _dwh_estado and _dwh_estado[0] == "vacio":
+    st.warning(f"⚠️ El Data Warehouse no devolvió conversaciones (consulta vacía). "
+               f"Mostrando histórico hasta {df_raw['created_at'].max():%d/%m/%Y}.")
 
 # Sin filtros globales: cada pestaña define su propio rango de fechas.
 ags = colas = regs = labs = ests = []
