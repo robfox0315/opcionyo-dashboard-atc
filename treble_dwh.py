@@ -26,6 +26,17 @@ DB = "client_analytics"
 # Colas ATC (Vista Treble). Ajustable si cambia la operación.
 ATC_TAGS = ["default", "especialistas", "sdd"]
 
+# ── Roster fijo del equipo ATC (los agentes de Yésica) ──────────────
+# Editar aquí si entra o sale alguien del equipo.
+ATC_AGENTES = [
+    "Camila Rodriguez", "Estefany Suárez", "Mary Cárdenas", "Sofia Castro",
+    "Yesith Solano", "Eduardo Liendo", "Samira Pirique", "Lizbeth Calcina",
+]
+
+
+def _agentes_sql() -> str:
+    return "', '".join(a.lower().replace("'", "") for a in ATC_AGENTES)
+
 
 def dwh_activo() -> bool:
     try:
@@ -167,16 +178,9 @@ def equipos_disponibles() -> list:
 
 @st.cache_data(ttl=300)
 def resumen_atc_dia(dia: str, equipos=None) -> pd.DataFrame:
-    """Detalle por agente de UN día. SIEMPRE acotado a las colas ATC
-    (SDD + Especialistas + Default); 'equipos' solo refina dentro de ATC.
-    Nunca mezcla agentes de otras áreas."""
-    col = _col_equipo()
-    if equipos:
-        lst = "', '".join(str(e).lower().replace("'", "") for e in equipos
-                          if str(e).lower() in ("sdd", "especialistas", "default"))
-        scope = f"lower(c.{col}) IN ('{lst}')" if lst else f"lower(c.{col}) IN ('{_tags_sql()}')"
-    else:
-        scope = f"lower(c.{col}) IN ('{_tags_sql()}')"
+    """Detalle por agente de UN día, SOLO para los 8 agentes del equipo ATC
+    (lista ATC_AGENTES). Nunca mezcla agentes de otras áreas, sin importar
+    bajo qué cola/equipo aparezcan sus chats."""
     sql = f"""
     SELECT
         c.agent_name                                              AS agente,
@@ -191,7 +195,7 @@ def resumen_atc_dia(dia: str, equipos=None) -> pd.DataFrame:
     FROM {DB}.fact_conversations AS c
     WHERE toDate(c.created_at) = toDate('{dia}')
       AND c.first_agent_message_at IS NOT NULL
-      AND {scope}
+      AND lower(trim(c.agent_name)) IN ('{_agentes_sql()}')
     GROUP BY c.agent_name
     ORDER BY chats DESC
     """
@@ -200,22 +204,14 @@ def resumen_atc_dia(dia: str, equipos=None) -> pd.DataFrame:
 
 @st.cache_data(ttl=300)
 def interaccion_dia(dia: str, equipos=None) -> pd.DataFrame:
-    """Tiempo medio de interacción por agente = promedio de lo que tarda el
-    agente en responder al cliente dentro de la conversación, acotado a las
-    conversaciones del equipo seleccionado (así no lo contaminan otras colas).
-    Si la consulta por mensajes falla, cae a fact_agent_daily."""
-    col = _col_equipo()
-    filtro = ""
-    if equipos:
-        lst = "', '".join(str(e).lower().replace("'", "") for e in equipos)
-        filtro = f"AND lower({col}) IN ('{lst}')"
+    """Interacción por agente (por mensajes) SOLO para los 8 agentes ATC."""
     sql = f"""
     WITH scope AS (
         SELECT conversation_id
         FROM {DB}.fact_conversations
         WHERE toDate(created_at) = toDate('{dia}')
           AND first_agent_message_at IS NOT NULL
-          {filtro}
+          AND lower(trim(agent_name)) IN ('{_agentes_sql()}')
     ),
     m AS (
         SELECT
@@ -246,6 +242,7 @@ def interaccion_dia(dia: str, equipos=None) -> pd.DataFrame:
             SELECT agent_name AS agente, avg_response_time_sec AS interaccion_seg
             FROM {DB}.fact_agent_daily
             WHERE toDate(day) = toDate('{dia}') AND chats_handled > 0
+              AND lower(trim(agent_name)) IN ('{_agentes_sql()}')
         """)
 
 

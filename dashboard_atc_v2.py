@@ -1164,17 +1164,18 @@ with t_atc:
         _def = ([e for e in _eqs if str(e).lower() == "default"] or
                 [e for e in _eqs if str(e).lower() in ("sdd", "especialistas", "default")] or _eqs)
 
-        cA, cB, cC = st.columns([1.1, 1.6, 1.6])
+        cA, cC = st.columns([1, 2])
         _dia = cA.date_input("📅 Día", value=_hoy, key="atc_dia")
-        _eq_sel = cB.multiselect("👥 Equipo", _eqs, default=_def, key="atc_eq")
+        _eq_sel = None
         try:
-            _base = _rd.resumen_atc_dia(str(_dia), _eq_sel)
+            _base = _rd.resumen_atc_dia(str(_dia))
         except Exception as _e:
             _base = pd.DataFrame()
             st.markdown(f'<div class="alrt">No se pudo consultar el DWH: {_e}</div>',
                         unsafe_allow_html=True)
         _ags_op = sorted(_base["agente"].dropna().unique()) if not _base.empty else []
-        _ag_sel = cC.multiselect("👤 Agente", _ags_op, placeholder="Todos", key="atc_ag")
+        _ag_sel = cC.multiselect("👤 Agente (opcional)", _ags_op, placeholder="Los 8 de ATC",
+                                 key="atc_ag")
 
         if _base.empty:
             st.info("Sin datos de ATC para ese día en el Data Warehouse.")
