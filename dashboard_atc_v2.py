@@ -43,7 +43,7 @@ COLOR_SEQ    = [OY_TEAL, OY_BLUE, OY_AMBER, "#7E57C2", "#EC4899",
 # ── CSS ───────────────────────────────────────────────────────
 st.markdown("""
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Space+Grotesk:wght@500;600;700&display=swap');
 :root{
   --oy-teal:#16B6C2; --oy-td:#0E7C86; --oy-blue:#3B6FE0;
   --oy-ok:#0F9D6B; --oy-warn:#DC2626; --oy-amb:#D98A0B; --oy-purple:#6D4AFF;
@@ -54,7 +54,11 @@ html,body,[class*="css"],.stApp,[data-testid="stAppViewContainer"],
 [data-testid="stSidebar"]{font-family:'Inter',-apple-system,'Segoe UI',sans-serif;}
 .stApp{background:var(--surface);}
 .block-container{padding-top:1.3rem;max-width:1440px;}
-h1,h2,h3,h4,h5{color:var(--ink);font-weight:700;letter-spacing:-.012em;}
+h1,h2,h3,h4,h5{font-family:'Space Grotesk','Inter',sans-serif;color:var(--ink);
+  font-weight:700;letter-spacing:-.018em;}
+/* Look de producto: ocultar menú, footer y barra superior de Streamlit */
+#MainMenu,footer,[data-testid="stToolbar"],[data-testid="stDecoration"]{visibility:hidden;height:0;}
+.sec{font-family:'Space Grotesk','Inter',sans-serif;}
 
 [data-testid="stMetric"]{background:var(--card);border:1px solid var(--line);
   border-radius:12px;padding:14px 16px;}
@@ -1082,12 +1086,12 @@ with t1:
                     s = int(seg)
                     return f"{s//3600}:{(s%3600)//60:02d}:{s%60:02d}"
 
-                # Interacción (avg_response_time_sec, mediana)
+                # Interacción (mediana avg_response_time_sec de agentes ATC)
                 _iw = _hd.interaccion_oficial_semanal(120)
                 _imap = {_sund(r["semana"]): _hms(r["interaccion_seg"]) for _, r in _iw.iterrows()}
                 for col in tab_glob.columns:
-                    if col in _imap:
-                        tab_glob.loc["Tiempo medio interacción", col] = _imap[col]
+                    val = _imap.get(col, "")
+                    tab_glob.loc["Tiempo medio interacción", col] = val if val else "N/D"
 
                 # Filas de IA (fact_sessions · AI/HumanHandover)
                 _ia = _hd.ia_semanal(120)
@@ -1105,6 +1109,8 @@ with t1:
                         if col in _iamap:
                             v = _iamap[col][coldwh]
                             tab_glob.loc[fila, col] = (f"{v:.2f}%" if "pct" in coldwh else int(v))
+                        elif not str(tab_glob.loc[fila, col]).strip():
+                            tab_glob.loc[fila, col] = "N/D"
                 # Ordenar: IA arriba (como en el Excel de Angela)
                 _orden = (["Chats atendidos"] + list(_iafilas.keys()) +
                           [f for f in tab_glob.index if f not in ["Chats atendidos", *_iafilas.keys()]])
