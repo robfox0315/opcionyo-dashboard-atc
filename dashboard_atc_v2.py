@@ -2511,4 +2511,5 @@ with t_esp:
 
 # ── Footer ──────────────────────────────────────────────────────────
 st.divider()
-st.caption(f"Opción Yo · Atención al Cliente · actualizado {df_raw['created_at'].max():%d/%m/%Y %H:%M}")
+st.caption(f"Opción Yo · Atención al Cliente · actualizado {df_raw['created_at'].max():%d/%m/%Y %H:%M} "
+           f"· Build 2026-07-30-interaccion-mediana")
