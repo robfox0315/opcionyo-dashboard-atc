@@ -1086,35 +1086,12 @@ with t1:
                     s = int(seg)
                     return f"{s//3600}:{(s%3600)//60:02d}:{s%60:02d}"
 
-                # Interacción (mediana avg_response_time_sec de agentes ATC)
+                # Interacción semanal = MEDIANA de agentes ATC (método Treble)
                 _iw = _hd.interaccion_oficial_semanal(120)
                 _imap = {_sund(r["semana"]): _hms(r["interaccion_seg"]) for _, r in _iw.iterrows()}
                 for col in tab_glob.columns:
                     val = _imap.get(col, "")
                     tab_glob.loc["Tiempo medio interacción", col] = val if val else "N/D"
-
-                # Filas de IA (fact_sessions · AI/HumanHandover)
-                _ia = _hd.ia_semanal(120)
-                _iafilas = {
-                    "Total chats IA": "total_chats_ia",
-                    "Chats IA derivados a agentes": "ia_derivados",
-                    "Atendidos y cerrados por IA": "ia_cerrados",
-                    "% derivación IA": "pct_derivacion_ia",
-                }
-                _iamap = {_sund(r["semana"]): r for _, r in _ia.iterrows()}
-                for fila, coldwh in _iafilas.items():
-                    if fila not in tab_glob.index:
-                        tab_glob.loc[fila] = ""
-                    for col in tab_glob.columns:
-                        if col in _iamap:
-                            v = _iamap[col][coldwh]
-                            tab_glob.loc[fila, col] = (f"{v:.2f}%" if "pct" in coldwh else int(v))
-                        elif not str(tab_glob.loc[fila, col]).strip():
-                            tab_glob.loc[fila, col] = "N/D"
-                # Ordenar: IA arriba (como en el Excel de Angela)
-                _orden = (["Chats atendidos"] + list(_iafilas.keys()) +
-                          [f for f in tab_glob.index if f not in ["Chats atendidos", *_iafilas.keys()]])
-                tab_glob = tab_glob.reindex([f for f in _orden if f in tab_glob.index])
         except Exception:
             pass  # sin DWH, la tabla queda con interacción en blanco (como el CSV)
 
@@ -1205,7 +1182,10 @@ with t_atc:
                 return float((v[ok] * p[ok]).sum() / p[ok].sum()) if ok.any() else np.nan
 
             _cal = _pond("calificacion", "calificados")
-            _fr, _in, _re = _pond("primera_resp_seg"), _pond("interaccion_seg"), _pond("resolucion_seg")
+            _fr, _re = _pond("primera_resp_seg"), _pond("resolucion_seg")
+            # Interacción: MEDIANA de los agentes (método de Treble, robusto a outliers)
+            _iv_vals = pd.to_numeric(m["interaccion_seg"], errors="coerce").dropna()
+            _in = float(_iv_vals.median()) if len(_iv_vals) else np.nan
 
             # ── Panel de indicadores (estilo Treble, más limpio) ──
             k1, k2, k3 = st.columns([1.15, 1, 1.15])

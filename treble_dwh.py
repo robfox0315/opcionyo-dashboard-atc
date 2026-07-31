@@ -79,13 +79,12 @@ def probar_conexion() -> tuple:
 # ── TIEMPO MEDIO DE INTERACCIÓN (oficial · fact_agent_daily) ──────
 @st.cache_data(ttl=600)
 def interaccion_oficial_semanal(dias: int = 120) -> pd.DataFrame:
-    """Interacción semanal = avg_response_time_sec ponderado por chats de los 8
-    agentes ATC (mismo método que el reporte diario). Fuente oficial Treble."""
+    """Interacción semanal = MEDIANA de avg_response_time_sec de los 8 agentes ATC
+    (mismo criterio que el reporte diario, robusto a outliers como en Treble)."""
     sql = f"""
     SELECT
         toStartOfWeek(day, 1) AS semana,
-        round(sum(avg_response_time_sec * chats_handled)
-              / nullIf(sum(if(avg_response_time_sec > 0, chats_handled, 0)), 0), 0) AS interaccion_seg
+        round(medianIf(avg_response_time_sec, avg_response_time_sec > 0), 0) AS interaccion_seg
     FROM {DB}.fact_agent_daily
     WHERE day >= now() - INTERVAL {dias} DAY
       AND chats_handled > 0
