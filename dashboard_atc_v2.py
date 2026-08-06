@@ -694,6 +694,11 @@ _FMIN = df_raw["created_at"].min().date()
 _FMAX = df_raw["created_at"].max().date()
 _AGENTES_OPTS = sorted(df_raw["agent"].dropna().unique())
 _COLAS_OPTS = sorted(df_raw["tag"].dropna().unique())
+# Roster de los 8 agentes ATC (para preseleccionar en las pestañas — Yésica)
+_ATC_ROSTER = ["Camila Rodriguez", "Estefany Suárez", "Mary Cárdenas", "Sofia Castro",
+               "Yesith Solano", "Eduardo Liendo", "Samira Pirique", "Lizbeth Calcina"]
+_ATC_DEFAULT = [a for a in _AGENTES_OPTS
+                if a.strip().lower() in [x.lower() for x in _ATC_ROSTER]]
 
 
 def filtro_fecha(key, label="📅 Rango de fechas", con_agente=True):
@@ -704,7 +709,8 @@ def filtro_fecha(key, label="📅 Rango de fechas", con_agente=True):
             r = st.date_input(label, (_FMIN, _FMAX), min_value=_FMIN, max_value=_FMAX,
                               key=f"fecha_{key}")
         with c2:
-            ags = st.multiselect("👤 Agente", _AGENTES_OPTS, placeholder="Todos", key=f"ag_{key}")
+            ags = st.multiselect("👤 Agente", _AGENTES_OPTS, default=_ATC_DEFAULT,
+                                  placeholder="Los 8 de ATC", key=f"ag_{key}")
         with c3:
             colas = st.multiselect("📂 Cola / Especialista", _COLAS_OPTS, placeholder="Todas",
                                    key=f"co_{key}")
