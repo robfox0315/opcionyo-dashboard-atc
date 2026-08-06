@@ -148,7 +148,7 @@ def resumen_atc_dia(dia: str, equipos=None) -> pd.DataFrame:
         c.agent_name                                              AS agente,
         count()                                                   AS chats,
         countIf(c.rating > 0)                                     AS calificados,
-        round(avgIf(c.rating, c.rating > 0), 2)                   AS calificacion,
+        avgIf(c.rating, c.rating > 0)                             AS calificacion,
         round(avgIf(dateDiff('second', c.assigned_at, c.first_agent_message_at),
                     c.assigned_at IS NOT NULL AND c.first_agent_message_at IS NOT NULL
                     AND c.first_agent_message_at >= c.assigned_at), 0) AS primera_resp_seg,

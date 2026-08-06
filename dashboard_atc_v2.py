@@ -679,7 +679,14 @@ elif _dwh_estado and _dwh_estado[0] == "vacio":
     st.warning(f"⚠️ El Data Warehouse no devolvió conversaciones (consulta vacía). "
                f"Mostrando histórico hasta {df_raw['created_at'].max():%d/%m/%Y}.")
 
-# Sin filtros globales: cada pestaña define su propio rango de fechas.
+# ── FILTRO GLOBAL ATC (Yésica): solo colas SDD, Especialistas y Default ──
+# Todas las pestañas muestran únicamente ATC; se excluyen cancelaciones,
+# mantenimiento, cobros, consultoría, ventas, etc.
+ATC_COLAS = ["sdd", "especialistas", "default"]
+_antes_atc = len(df_raw)
+df_raw = df_raw[df_raw["tag"].fillna("").str.strip().str.lower().isin(ATC_COLAS)].copy()
+
+# Sin filtros globales adicionales: cada pestaña define su propio rango de fechas.
 ags = colas = regs = labs = ests = []
 gc = "semana"
 dur_excl_out = True
