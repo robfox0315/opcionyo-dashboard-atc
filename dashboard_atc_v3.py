@@ -43,7 +43,7 @@ COLOR_SEQ    = [OY_TEAL, OY_BLUE, OY_AMBER, "#7E57C2", "#EC4899",
 # ── CSS ───────────────────────────────────────────────────────
 st.markdown("""
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Space+Grotesk:wght@500;600;700&display=swap');
 :root{
   --oy-teal:#16B6C2; --oy-td:#0E7C86; --oy-blue:#3B6FE0;
   --oy-ok:#0F9D6B; --oy-warn:#DC2626; --oy-amb:#D98A0B; --oy-purple:#6D4AFF;
@@ -54,7 +54,11 @@ html,body,[class*="css"],.stApp,[data-testid="stAppViewContainer"],
 [data-testid="stSidebar"]{font-family:'Inter',-apple-system,'Segoe UI',sans-serif;}
 .stApp{background:var(--surface);}
 .block-container{padding-top:1.3rem;max-width:1440px;}
-h1,h2,h3,h4,h5{color:var(--ink);font-weight:700;letter-spacing:-.012em;}
+h1,h2,h3,h4,h5{font-family:'Space Grotesk','Inter',sans-serif;color:var(--ink);
+  font-weight:700;letter-spacing:-.018em;}
+/* Look de producto: ocultar menú, footer y barra superior de Streamlit */
+#MainMenu,footer,[data-testid="stToolbar"],[data-testid="stDecoration"]{visibility:hidden;height:0;}
+.sec{font-family:'Space Grotesk','Inter',sans-serif;}
 
 [data-testid="stMetric"]{background:var(--card);border:1px solid var(--line);
   border-radius:12px;padding:14px 16px;}
@@ -214,7 +218,7 @@ def sfig(fig, h=320):
     if fig.layout.title.text:
         fig.update_layout(title_font=dict(color=OY_TEAL_DARK, size=14))
     else:
-        fig.update_layout(title=None, margin=dict(t=12, b=10, l=10, r=10))
+        fig.update_layout(title_text="", margin=dict(t=12, b=10, l=10, r=10))
     return fig
 
 def gauge(title, val, ref, rng, steps, suffix="", invert=False):
@@ -608,8 +612,8 @@ st.markdown("""
 <div class="oy-header">
   <div class="oy-logo">opción<span>yo</span></div>
   <div class="oy-htxt">
-    <p class="oy-htitle">Dashboard de Gestión · Atención al Cliente</p>
-    <p class="oy-hsub">Vista gerencial · datos Treble + HubSpot en vivo</p>
+    <p class="oy-htitle">Atención al Cliente</p>
+    <p class="oy-hsub">Panel de gestión</p>
   </div>
 </div>""", unsafe_allow_html=True)
 
@@ -639,26 +643,26 @@ if st.session_state["df_historico"].empty:
     st.stop()
 
 # ── FUENTE HÍBRIDA: histórico CSV + últimos 90 días EN VIVO del Data Warehouse ──
-# El DWH es la fuente autoritativa (datos exactos de Treble, retraso máx. 3 h) y
-# gana en el solape; el CSV aporta la historia anterior a la ventana del DWH.
-_FUENTE_TXT = "📦 Histórico (CSV)"
+_dwh_estado = None
 try:
     import treble_dwh as _tw
     if _tw.dwh_activo():
         _live = _tw.cargar_conversaciones(90)
         if not _live.empty:
             _base = st.session_state["df_historico"].copy()
-            _cols = [c for c in _base.columns if c in _live.columns] or list(_live.columns)
             _base["_o"], _live["_o"] = 0, 1          # el DWH gana
             _mix = pd.concat([_base, _live], ignore_index=True)
             _mix["_k"] = _mix["phone"].astype(str) + "|" + _mix["created_at"].astype(str)
             _mix = (_mix.sort_values("_o").drop_duplicates("_k", keep="last")
                         .drop(columns=["_o", "_k"]))
             st.session_state["df_historico"] = _mix
-            _FUENTE_TXT = (f"🟢 Data Warehouse en vivo ({len(_live):,} conversaciones · "
-                           f"últimos 90 días) + histórico CSV")
-except Exception:
-    pass   # sin DWH el dashboard sigue funcionando con el CSV
+            _dwh_estado = ("ok", len(_live))
+        else:
+            _dwh_estado = ("vacio", 0)
+    else:
+        _dwh_estado = ("inactivo", 0)
+except Exception as _e:
+    _dwh_estado = ("error", f"{type(_e).__name__}: {str(_e)[:400]}")
 
 try:
     df_raw = load_data(io.StringIO(st.session_state["df_historico"].to_csv(index=False)))
@@ -666,10 +670,23 @@ except Exception as e:
     st.error(f"Error procesando datos: {e}")
     st.stop()
 
-st.caption(f"Fuente de datos: {_FUENTE_TXT} · actualizado "
-           f"{df_raw['created_at'].max():%d/%m/%Y %H:%M}")
+# Aviso SOLO si la actualización en vivo falló (para no dejar datos viejos en silencio)
+if _dwh_estado and _dwh_estado[0] == "error":
+    st.warning(f"⚠️ No se pudo actualizar en vivo desde el Data Warehouse. "
+               f"Mostrando histórico hasta {df_raw['created_at'].max():%d/%m/%Y}. "
+               f"Detalle: {_dwh_estado[1]}")
+elif _dwh_estado and _dwh_estado[0] == "vacio":
+    st.warning(f"⚠️ El Data Warehouse no devolvió conversaciones (consulta vacía). "
+               f"Mostrando histórico hasta {df_raw['created_at'].max():%d/%m/%Y}.")
 
-# Sin filtros globales: cada pestaña define su propio rango de fechas.
+# ── FILTRO GLOBAL ATC (Yésica): solo colas SDD, Especialistas y Default ──
+# Todas las pestañas muestran únicamente ATC; se excluyen cancelaciones,
+# mantenimiento, cobros, consultoría, ventas, etc.
+ATC_COLAS = ["sdd", "especialistas", "default"]
+_antes_atc = len(df_raw)
+df_raw = df_raw[df_raw["tag"].fillna("").str.strip().str.lower().isin(ATC_COLAS)].copy()
+
+# Sin filtros globales adicionales: cada pestaña define su propio rango de fechas.
 ags = colas = regs = labs = ests = []
 gc = "semana"
 dur_excl_out = True
@@ -677,6 +694,11 @@ _FMIN = df_raw["created_at"].min().date()
 _FMAX = df_raw["created_at"].max().date()
 _AGENTES_OPTS = sorted(df_raw["agent"].dropna().unique())
 _COLAS_OPTS = sorted(df_raw["tag"].dropna().unique())
+# Roster de los 8 agentes ATC (para preseleccionar en las pestañas — Yésica)
+_ATC_ROSTER = ["Camila Rodriguez", "Estefany Suárez", "Mary Cárdenas", "Sofia Castro",
+               "Yesith Solano", "Eduardo Liendo", "Samira Pirique", "Lizbeth Calcina"]
+_ATC_DEFAULT = [a for a in _AGENTES_OPTS
+                if a.strip().lower() in [x.lower() for x in _ATC_ROSTER]]
 
 
 def filtro_fecha(key, label="📅 Rango de fechas", con_agente=True):
@@ -687,7 +709,8 @@ def filtro_fecha(key, label="📅 Rango de fechas", con_agente=True):
             r = st.date_input(label, (_FMIN, _FMAX), min_value=_FMIN, max_value=_FMAX,
                               key=f"fecha_{key}")
         with c2:
-            ags = st.multiselect("👤 Agente", _AGENTES_OPTS, placeholder="Todos", key=f"ag_{key}")
+            ags = st.multiselect("👤 Agente", _AGENTES_OPTS, default=_ATC_DEFAULT,
+                                  placeholder="Los 8 de ATC", key=f"ag_{key}")
         with c3:
             colas = st.multiselect("📂 Cola / Especialista", _COLAS_OPTS, placeholder="Todas",
                                    key=f"co_{key}")
@@ -967,8 +990,6 @@ with t1:
     _fi, _ff, _ags, _colas = filtro_fecha("resumen", con_agente=False)
     _dfr = df_raw[(df_raw["created_at"].dt.date >= _fi) &
                   (df_raw["created_at"].dt.date <= _ff)]
-    st.caption(f"📅 {_fi:%d/%m/%Y} → {_ff:%d/%m/%Y} · vista de gerencia · "
-               f"fuente: treble · chats atendidos (colas ATC: SDD + Especialistas + Default)")
 
     rdA = resp_preparar(_dfr)
     rgA = rdA[rdA["tag"].fillna("").str.lower().isin(["default", "especialistas", "sdd"])]
@@ -1002,10 +1023,6 @@ with t1:
                 return ""
             d = cur - prv
             return f"{'▲' if d >= 0 else '▼'} {abs(d):.2f}{unit} vs sem. ant."
-
-        cS2.markdown(f'<div class="info">Cierre de la semana del <b>{wk_sel}</b> · '
-                     f'<b>{int(row["Chats"]):,}</b> chats atendidos (colas ATC)</div>',
-                     unsafe_allow_html=True)
 
         st.markdown('<div class="kpi-grid">' +
             kpi("Chats atendidos", f"{int(row['Chats']):,}",
@@ -1051,10 +1068,7 @@ with t1:
 
         st.divider()
 
-        st.markdown('<div class="sec">📊 Histórico Semanal · Global (ATC)</div>', unsafe_allow_html=True)
-        st.markdown('<div class="info">Réplica de la hoja «Histórico semanal» del Excel de gerencia '
-                    '(sin filas de IA). Columnas = semanas + cierres mensuales.</div>',
-                    unsafe_allow_html=True)
+        st.markdown('<div class="sec">📊 Histórico Semanal · Global</div>', unsafe_allow_html=True)
         _PICO = ["Día con más chats (promedio)", "Horas con más chats (promedio)",
                  "Día y hora con más chats (récord)"]
 
@@ -1085,45 +1099,21 @@ with t1:
                     s = int(seg)
                     return f"{s//3600}:{(s%3600)//60:02d}:{s%60:02d}"
 
-                # Interacción (avg_response_time_sec, mediana)
+                # Interacción semanal = MEDIANA de agentes ATC (método Treble)
                 _iw = _hd.interaccion_oficial_semanal(120)
                 _imap = {_sund(r["semana"]): _hms(r["interaccion_seg"]) for _, r in _iw.iterrows()}
                 for col in tab_glob.columns:
-                    if col in _imap:
-                        tab_glob.loc["Tiempo medio interacción", col] = _imap[col]
-
-                # Filas de IA (fact_sessions · AI/HumanHandover)
-                _ia = _hd.ia_semanal(120)
-                _iafilas = {
-                    "Total chats IA": "total_chats_ia",
-                    "Chats IA derivados a agentes": "ia_derivados",
-                    "Atendidos y cerrados por IA": "ia_cerrados",
-                    "% derivación IA": "pct_derivacion_ia",
-                }
-                _iamap = {_sund(r["semana"]): r for _, r in _ia.iterrows()}
-                for fila, coldwh in _iafilas.items():
-                    if fila not in tab_glob.index:
-                        tab_glob.loc[fila] = ""
-                    for col in tab_glob.columns:
-                        if col in _iamap:
-                            v = _iamap[col][coldwh]
-                            tab_glob.loc[fila, col] = (f"{v:.2f}%" if "pct" in coldwh else int(v))
-                # Ordenar: IA arriba (como en el Excel de Angela)
-                _orden = (["Chats atendidos"] + list(_iafilas.keys()) +
-                          [f for f in tab_glob.index if f not in ["Chats atendidos", *_iafilas.keys()]])
-                tab_glob = tab_glob.reindex([f for f in _orden if f in tab_glob.index])
+                    val = _imap.get(col, "")
+                    tab_glob.loc["Tiempo medio interacción", col] = val if val else "N/D"
         except Exception:
             pass  # sin DWH, la tabla queda con interacción en blanco (como el CSV)
 
         st.dataframe(tab_glob, use_container_width=True, height=620)
-        st.caption("«Tiempo medio interacción» queda en blanco: Treble lo calcula a nivel de "
-                   "mensajes (no viene en el CSV) — se copia de Treble o se resolverá con el DWH.")
         st.download_button("⬇️ Descargar Histórico Semanal Global (.csv)",
                            tab_glob.to_csv().encode("utf-8"),
                            "historico_semanal_global.csv", "text/csv", key="rg_csv")
 
         st.markdown('<div class="sec blue">👥 Agente · Histórico Semanal</div>', unsafe_allow_html=True)
-        st.caption("Réplica de la hoja «AgenteHistorico semanal»: 10 métricas por agente.")
         _pres = set(rgA["agent"].unique())
         for etq, real in RESP_AGENTES.items():
             if real not in _pres:
@@ -1135,13 +1125,18 @@ with t1:
 #  TAB · RESUMEN ATC (día) — EN VIVO desde el Data Warehouse
 # ╚═══════════════════════════════════════╝
 with t_atc:
-    st.markdown('<div class="sec">📋 Resumen ATC · reporte diario</div>', unsafe_allow_html=True)
+    # Metas del reporte diario (editables aquí)
+    META_1RESP_S = 60      # 00:01:00
+    META_INTER_S = 300     # 00:05:00
+    META_RESOL_S = 7200    # 02:00:00
 
-    def _sec_hms(s):
+    def _hms(s):
         if s is None or (isinstance(s, float) and pd.isna(s)):
             return "—"
         s = int(round(float(s)))
         return f"{s//3600:02d}:{(s%3600)//60:02d}:{s%60:02d}"
+
+    st.markdown('<div class="sec">📋 Resumen ATC · reporte diario</div>', unsafe_allow_html=True)
 
     _dwh_ok = False
     try:
@@ -1151,90 +1146,209 @@ with t_atc:
         _dwh_ok = False
 
     if not _dwh_ok:
-        st.markdown('<div class="alrt">Esta pestaña se alimenta <b>en vivo</b> del Data Warehouse '
-                    'de Treble. Configura <code>[treble_dwh]</code> en Secrets para activarla.</div>',
-                    unsafe_allow_html=True)
+        st.info("Conecta el Data Warehouse en Secrets para ver el reporte diario.")
     else:
         try:
-            _ult = _rd.ultimo_dia_dwh()
-            _hoy = pd.Timestamp(_ult).date() if _ult else pd.Timestamp.today().date()
+            _u = _rd.ultimo_dia_dwh()
+            _hoy = pd.Timestamp(_u).date() if _u else pd.Timestamp.today().date()
         except Exception:
             _hoy = pd.Timestamp.today().date()
-
-        cA, cB = st.columns([1, 3])
-        _dia = cA.date_input("📅 Día", value=_hoy, key="atc_dia")
-        cB.markdown('<div class="info">Datos <b>en vivo</b> desde el Data Warehouse de Treble '
-                    '(retraso máx. 3 h). Colas: SDD + Especialistas + Default. '
-                    'Mismas métricas y fórmula que el panel de Treble.</div>',
-                    unsafe_allow_html=True)
-
         try:
-            _ag = _rd.resumen_atc_dia(str(_dia))
-            _rt = _rd.rating_atc_dia(str(_dia))
+            _eqs = _rd.equipos_disponibles()
+        except Exception:
+            _eqs = []
+        _def = ([e for e in _eqs if str(e).lower() == "default"] or
+                [e for e in _eqs if str(e).lower() in ("sdd", "especialistas", "default")] or _eqs)
+
+        cA, cC = st.columns([1, 2])
+        _dia = cA.date_input("📅 Día", value=_hoy, key="atc_dia")
+        _eq_sel = None
+        try:
+            _base = _rd.resumen_atc_dia(str(_dia))
         except Exception as _e:
-            _ag, _rt = pd.DataFrame(), pd.DataFrame()
+            _base = pd.DataFrame()
             st.markdown(f'<div class="alrt">No se pudo consultar el DWH: {_e}</div>',
                         unsafe_allow_html=True)
+        _ags_op = sorted(_base["agente"].dropna().unique()) if not _base.empty else []
+        _ag_sel = cC.multiselect("👤 Agente (opcional)", _ags_op, placeholder="Los 8 de ATC",
+                                 key="atc_ag")
 
-        if _ag.empty:
+        if _base.empty:
             st.info("Sin datos de ATC para ese día en el Data Warehouse.")
         else:
-            m = _ag.merge(_rt[["agent_name", "rating", "calificados"]], on="agent_name", how="left") \
-                   if not _rt.empty else _ag.assign(rating=np.nan, calificados=0)
-            w = m["chats_handled"].astype(float)
-            tot_chats = int(w.sum())
+            try:
+                _iv = _rd.interaccion_dia(str(_dia), _eq_sel)
+            except Exception:
+                _iv = pd.DataFrame(columns=["agente", "interaccion_seg"])
+            m = _base.merge(_iv, on="agente", how="left") if not _iv.empty \
+                else _base.assign(interaccion_seg=np.nan)
+            if _ag_sel:
+                m = m[m["agente"].isin(_ag_sel)]
 
-            def _pond(col):
+            w = pd.to_numeric(m["chats"], errors="coerce").fillna(0)
+            tot = int(w.sum())
+
+            def _pond(col, peso=None):
                 v = pd.to_numeric(m[col], errors="coerce")
-                ok = v.notna() & (w > 0)
-                return float((v[ok] * w[ok]).sum() / w[ok].sum()) if ok.any() and w[ok].sum() else np.nan
+                p = w if peso is None else pd.to_numeric(m[peso], errors="coerce").fillna(0)
+                ok = v.notna() & (p > 0)
+                return float((v[ok] * p[ok]).sum() / p[ok].sum()) if ok.any() else np.nan
 
-            _fr = _pond("avg_first_response_sec")
-            _in = _pond("avg_response_time_sec")
-            _re = _pond("avg_resolution_min") * 60 if not pd.isna(_pond("avg_resolution_min")) else np.nan
-            if not _rt.empty and _rt["calificados"].sum() > 0:
-                _rating = float((_rt["rating"].fillna(0) * _rt["calificados"]).sum() /
-                                _rt["calificados"].sum())
-            else:
-                _rating = np.nan
+            _cal = _pond("calificacion", "calificados")
+            _fr, _re = _pond("primera_resp_seg"), _pond("resolucion_seg")
+            # Interacción: MEDIANA de los agentes (método de Treble, robusto a outliers)
+            _iv_vals = pd.to_numeric(m["interaccion_seg"], errors="coerce").dropna()
+            _in = float(_iv_vals.median()) if len(_iv_vals) else np.nan
 
-            st.markdown('<div class="kpi-grid">' +
-                kpi("Chats atendidos", f"{tot_chats:,}", _dia.strftime("%d/%m/%Y"), kind="alt") +
-                kpi("Calificación", f"{_rating:.2f}" if not pd.isna(_rating) else "—",
-                    f"meta ≥{META_RATING}",
-                    kind="ok" if (not pd.isna(_rating) and _rating >= META_RATING) else "warn") +
-                kpi("Primera respuesta", _sec_hms(_fr), "promedio ponderado", kind="ok") +
-                kpi("Tiempo medio interacción", _sec_hms(_in), "métrica oficial Treble", kind="dark") +
-                kpi("Tiempo resolución", _sec_hms(_re), "promedio ponderado", kind="amber") +
-                '</div>', unsafe_allow_html=True)
+            # ── Panel de indicadores (estilo Treble, más limpio) ──
+            k1, k2, k3 = st.columns([1.15, 1, 1.15])
+            with k1:
+                st.markdown('<div class="kpi-grid" style="flex-direction:column">' +
+                    kpi("Chats atendidos", f"{tot:,}", _dia.strftime("%d/%m/%Y"), kind="alt") +
+                    kpi("Primera respuesta", _hms(_fr), f"meta ≤ {_hms(META_1RESP_S)}",
+                        kind="ok" if (not pd.isna(_fr) and _fr <= META_1RESP_S) else "warn") +
+                    '</div>', unsafe_allow_html=True)
+            with k2:
+                st.plotly_chart(gauge("Calificación", 0 if pd.isna(_cal) else _cal, META_RATING, [0, 5],
+                    [{"range": [0, 4.5], "color": "#FADBD8"},
+                     {"range": [4.5, META_RATING], "color": "#FDEBD0"},
+                     {"range": [META_RATING, 5], "color": "#D5F5E3"}]), use_container_width=True)
+            with k3:
+                st.markdown('<div class="kpi-grid" style="flex-direction:column">' +
+                    kpi("Tiempo medio interacción", _hms(_in), f"meta ≤ {_hms(META_INTER_S)}",
+                        kind="ok" if (not pd.isna(_in) and _in <= META_INTER_S) else "warn") +
+                    kpi("Tiempo resolución", _hms(_re), f"meta ≤ {_hms(META_RESOL_S)}",
+                        kind="ok" if (not pd.isna(_re) and _re <= META_RESOL_S) else "warn") +
+                    '</div>', unsafe_allow_html=True)
 
+            _ok_n = sum([(not pd.isna(_cal) and _cal >= META_RATING),
+                         (not pd.isna(_fr) and _fr <= META_1RESP_S),
+                         (not pd.isna(_in) and _in <= META_INTER_S),
+                         (not pd.isna(_re) and _re <= META_RESOL_S)])
+            _cls = "good" if _ok_n == 4 else ("info" if _ok_n >= 3 else "alrt")
+            st.markdown(f'<div class="{_cls}">Cumplimiento del día: <b>{_ok_n} de 4 indicadores</b> · '
+                        f'{len(m)} agentes · equipos: {", ".join(_eq_sel) if _eq_sel else "todos"}</div>',
+                        unsafe_allow_html=True)
+
+            # ── Detalle por agente ──
             st.markdown("##### Detalle por agente")
             tabla = pd.DataFrame({
-                "Agente": m["agent_name"],
-                "Chats Atendidos": m["chats_handled"].astype(int),
-                "Calificación": m["rating"],
-                "Primera respuesta": m["avg_first_response_sec"].apply(_sec_hms),
-                "Tiempo medio interacción": m["avg_response_time_sec"].apply(_sec_hms),
-                "Tiempo resolución": m["avg_resolution_min"].apply(
-                    lambda v: _sec_hms(v * 60) if pd.notna(v) else "—"),
+                "Agente": m["agente"],
+                "Chats Atendidos": pd.to_numeric(m["chats"], errors="coerce").astype("Int64"),
+                "Calificación": pd.to_numeric(m["calificacion"], errors="coerce").round(2),
+                "Primera respuesta": m["primera_resp_seg"].apply(_hms),
+                "Tiempo medio interacción": m["interaccion_seg"].apply(_hms),
+                "Tiempo resolución": m["resolucion_seg"].apply(_hms),
             }).sort_values("Chats Atendidos", ascending=False)
             st.dataframe(tabla, use_container_width=True, hide_index=True,
-                         height=min(560, 60 + 36 * len(tabla)))
-
+                         height=min(520, 60 + 36 * len(tabla)))
             st.download_button("⬇️ Descargar reporte del día (.csv)",
                                tabla.to_csv(index=False).encode("utf-8"),
                                f"resumen_atc_{_dia}.csv", "text/csv", key="atc_csv")
 
-            # Texto listo para pegar en Slack
-            _cum = lambda ok: "✅" if ok else "❌"
-            _txt = (f"📊 Resultados ATC | {_dia:%d de %B}\n"
-                    f"Chats atendidos: {tot_chats:,}\n"
-                    f"⭐ Calificación: {_rating:.2f} {_cum(not pd.isna(_rating) and _rating >= META_RATING)}\n"
-                    f"⏱️ Primera respuesta: {_sec_hms(_fr)} {_cum(not pd.isna(_fr) and _fr <= 60)}\n"
-                    f"💬 Tiempo medio de interacción: {_sec_hms(_in)}\n"
-                    f"⌛ Tiempo de resolución: {_sec_hms(_re)}")
-            with st.expander("📨 Texto listo para el reporte de Slack"):
-                st.code(_txt, language=None)
+            # ── MENSAJE PARA SLACK (completo, listo para copiar) ──
+            _MESES = {1:"enero",2:"febrero",3:"marzo",4:"abril",5:"mayo",6:"junio",7:"julio",
+                      8:"agosto",9:"septiembre",10:"octubre",11:"noviembre",12:"diciembre"}
+
+            def _corto(s):
+                """MM:SS si es menos de una hora; si no, H:MM:SS."""
+                if s is None or (isinstance(s, float) and pd.isna(s)):
+                    return "—"
+                s = int(round(float(s)))
+                return f"{s//60:02d}:{s%60:02d}" if s < 3600 else f"{s//3600}:{(s%3600)//60:02d}:{s%60:02d}"
+
+            def _num(x, dec=2):
+                return "—" if pd.isna(x) else f"{x:.{dec}f}".replace(".", ",")
+
+            _ok_cal = (not pd.isna(_cal)) and _cal >= META_RATING
+            _ok_fr  = (not pd.isna(_fr))  and _fr <= META_1RESP_S
+            _ok_in  = (not pd.isna(_in))  and _in <= META_INTER_S
+            _ok_re  = (not pd.isna(_re))  and _re <= META_RESOL_S
+            _c = lambda ok: "✅" if ok else "❌"
+
+            _fallidos = [n for n, ok in [("la calificación", _ok_cal),
+                                         ("la primera respuesta", _ok_fr),
+                                         ("el tiempo de interacción", _ok_in),
+                                         ("el tiempo de resolución", _ok_re)] if not ok]
+            _acciones = {
+                "la calificación": "brindar una experiencia excepcional en cada conversación: "
+                                   "validar al cliente, leer el contexto completo y acompañarlo "
+                                   "hasta el cierre de su solicitud",
+                "la primera respuesta": "tomar los chats apenas se asignan para responder dentro "
+                                        "del primer minuto",
+                "el tiempo de interacción": "agilizar las respuestas dentro del chat sin afectar "
+                                            "la calidad de la atención",
+                "el tiempo de resolución": "cerrar los casos el mismo día y hacer seguimiento a "
+                                           "los que quedan abiertos",
+            }
+            if not _fallidos:
+                _narr = ("¡Cumplimos los 4 indicadores! Mantengamos este nivel: constancia en la "
+                         "calidad y en los tiempos de atención.")
+            elif len(_fallidos) == 1:
+                _f = _fallidos[0]
+                _narr = (f"El único indicador fuera de meta fue *{_f.replace('la ', '').replace('el ', '')}*, "
+                         f"por lo que hoy nuestro principal foco debe ser {_acciones[_f]}.")
+            else:
+                _narr = ("Los indicadores fuera de meta fueron " +
+                         ", ".join(_fallidos[:-1]) + f" y {_fallidos[-1]}. "
+                         f"Hoy nuestro foco será {_acciones[_fallidos[0]]}.")
+
+            _txt = (
+                f"📊 *Resultados ATC | {_dia.day} de {_MESES[_dia.month]}*\n"
+                f"Buen día, equipo. 💙\n\n"
+                f"Ayer atendimos *{tot:,} conversaciones* y estos fueron los resultados:\n"
+                f"⭐ Calificación: {_num(_cal)} {_c(_ok_cal)}\n"
+                f"💬 Chats atendidos: {tot:,}\n"
+                f"🕐 Primera respuesta: {_corto(_fr)} {_c(_ok_fr)}\n"
+                f"💭 Tiempo medio de interacción: {_corto(_in)} {_c(_ok_in)}\n"
+                f"⌛ Tiempo de resolución: {_hms(_re)} {_c(_ok_re)}\n\n"
+                f"Cumplimos *{_ok_n} de los 4 indicadores*. {_narr}"
+            )
+
+            # Focos individuales
+            _focos = []
+            for _, r in m.sort_values("chats", ascending=False).iterrows():
+                _rr = pd.to_numeric(r.get("calificacion"), errors="coerce")
+                _rf = pd.to_numeric(r.get("primera_resp_seg"), errors="coerce")
+                _ri = pd.to_numeric(r.get("interaccion_seg"), errors="coerce")
+                _rs = pd.to_numeric(r.get("resolucion_seg"), errors="coerce")
+                _mal = []
+                if pd.isna(_rr) or _rr < META_RATING:
+                    _mal.append(f"el rating ({_num(_rr)})" if not pd.isna(_rr) else "registrar calificaciones")
+                if not pd.isna(_rf) and _rf > META_1RESP_S:
+                    _mal.append(f"la primera respuesta ({_corto(_rf)})")
+                if not pd.isna(_ri) and _ri > META_INTER_S:
+                    _mal.append(f"la interacción ({_corto(_ri)})")
+                if not pd.isna(_rs) and _rs > META_RESOL_S:
+                    _mal.append(f"la resolución ({_hms(_rs)})")
+                if not _mal:
+                    _extra = " y mantuviste un rating de 5" if (not pd.isna(_rr) and _rr >= 5) else ""
+                    _focos.append(f"• *{r['agente']}*: ¡Excelente trabajo! Cumpliste todos "
+                                  f"los indicadores{_extra}.")
+                else:
+                    _bien = []
+                    if not pd.isna(_rr) and _rr >= META_RATING:
+                        _bien.append(f"excelente calidad ({_num(_rr)})")
+                    if not pd.isna(_rs) and _rs <= META_RESOL_S:
+                        _bien.append("buena resolución")
+                    _pre = (", ".join(_bien).capitalize() + ". ") if _bien else ""
+                    _focos.append(f"• *{r['agente']}*: {_pre}El foco está en mejorar "
+                                  + ", ".join(_mal) + ".")
+            _txt_focos = "*Focos individuales*\n" + "\n".join(_focos)
+            _obj = ("🎯 *Objetivo para hoy:* mantener los indicadores en meta y sostener la "
+                    "calidad de la atención." if not _fallidos else
+                    f"🎯 *Objetivo para hoy:* recuperar {_fallidos[0]} y sostener los indicadores "
+                    f"que ya estamos cumpliendo.")
+
+            st.markdown('<div class="sec ok">📨 Mensaje para Slack</div>', unsafe_allow_html=True)
+            cS1, cS2 = st.columns([1, 1])
+            _inc_focos = cS1.toggle("Incluir focos individuales", value=True, key="atc_focos")
+            _inc_obj = cS2.toggle("Incluir objetivo del día", value=True, key="atc_obj")
+            _final = _txt + (("\n\n" + _txt_focos) if _inc_focos else "") + \
+                     (("\n\n" + _obj) if _inc_obj else "")
+            st.code(_final, language=None)
+            st.download_button("⬇️ Descargar mensaje (.txt)", _final.encode("utf-8"),
+                               f"reporte_atc_{_dia}.txt", "text/plain", key="atc_txt")
 
 
 # ╔═══════════════════════════════════════╗
@@ -1481,8 +1595,6 @@ with t3:
     with cd2:
         # Obs 4: Tabla solo con churn real (sin +24hrs)
         st.subheader("🔁 Clientes con churn de plan repetido")
-        st.caption("Solo clientes con etiqueta 'Cancelar plan' o 'Reembolso' — "
-                   "no incluye cancelaciones de sesión")
         canc_cli = []
         # Obs 4: filtrar solo es_churn (no es_cancel que incluye +24hrs)
         for ph, g in df[df["es_churn"]].groupby("phone"):
@@ -1496,8 +1608,6 @@ with t3:
             cc_df = pd.DataFrame(canc_cli).sort_values("Cancelaciones",ascending=False).head(15)
             # Obs 5: link a explorador de chats
             st.dataframe(cc_df, use_container_width=True, hide_index=True, height=300)
-            st.caption("💡 Para ver los chats individuales de un cliente, "
-                       "copia su teléfono y pégalo en el buscador de la pestaña 📋 Explorador de Chats")
             st.download_button("⬇️ CSV churn de plan",
                                cc_df.to_csv(index=False).encode(),
                                "churn_plan.csv","text/csv")
@@ -1569,8 +1679,6 @@ with t4:
         yaxis={"categoryorder":"array",
                "categoryarray":["< 1 min","1–5 min","5–30 min","> 30 min"]})
     st.plotly_chart(sfig(fig, 240), use_container_width=True)
-    st.caption("🟢 Verde = rápido (bueno) · 🔴 Rojo = lento (problema). "
-               "La barra de <1 min es verde porque el 96.7% de los chats se asigna en menos de 1 minuto — eso es excelente.")
 
     # KPI INVISIBLE #2 — Chats fantasma
     st.markdown(f'<div class="invis">🔮 <b>KPI INVISIBLE #2 — Chats Fantasma</b><br>'
@@ -1607,9 +1715,6 @@ with t4:
             fig.update_traces(texttemplate="%{text:.3f}", textposition="outside")
             fig.add_hline(y=META_RATING, line_dash="dash", line_color=OY_TEAL)
             st.plotly_chart(sfig(fig,380), use_container_width=True)
-            st.caption("Correlación TPR vs Rating: casi nula (r≈-0.02). El cliente no penaliza mucho el tiempo — "
-                       "pero >30min sí baja el rating de 4.78 → 4.62.")
-
 
 # ╔═══════════════════════════════════════╗
 #  TAB 5 — RENDIMIENTO AGENTES
@@ -1868,7 +1973,6 @@ with t7:
     ca1, ca2 = st.columns(2)
     with ca1:
         st.subheader("Por qué llaman los clientes recurrentes")
-        st.caption("Fuente: columna labels · clientes con ≥2 contactos en el período")
         rec_ph2 = set(contactos[contactos >= 2].index)
         rexp_c  = (df[df["phone"].isin(rec_ph2)]["labels"]
                    .fillna("Sin etiqueta").str.split(r",\s*").explode().str.strip())
@@ -1881,7 +1985,6 @@ with t7:
         st.plotly_chart(sfig(fig_rc, 420), use_container_width=True)
     with ca2:
         st.subheader("¿Cuántas veces contactan?")
-        st.caption("Fuente: columna phone · distribución de frecuencia por cliente")
         freq_bins = pd.cut(contactos, bins=[0,1,2,5,10,20,999],
                            labels=["1 contacto","2","3–5","6–10","11–20",">20"])
         freq_df = freq_bins.value_counts().sort_index().reset_index()
@@ -1895,7 +1998,6 @@ with t7:
         st.plotly_chart(sfig(fig_freq, 420), use_container_width=True)
 
     st.subheader("¿Los clientes que más llaman califican diferente?")
-    st.caption("Fuente: columna rating · comparativa de satisfacción según frecuencia de contacto")
     df_freq = df.copy()
     df_freq["freq_cliente"] = df_freq["phone"].map(contactos)
     df_freq["bucket_freq"] = pd.cut(df_freq["freq_cliente"],
@@ -1921,13 +2023,6 @@ with t8:
     globals().update(_ctx(_fi, _ff, _ags, _colas))
     st.markdown('<div class="sec">📋 Explorador de Chats (detalle individual)</div>',
                 unsafe_allow_html=True)
-    st.markdown(
-        '<div class="info"><b>¿Qué ves aquí?</b> Cada fila es una conversación del CSV. '
-        'Filtra por cliente, teléfono o etiqueta. '
-        '<code>TPR (min)</code> = tiempo desde asignación hasta primer mensaje del agente · '
-        '<code>Handle (min)</code> = tiempo real activo (primer → último mensaje) · '
-        '<code>Fantasma</code> = último mensaje fue del cliente, no del agente. '
-        'Descarga el resultado para análisis externo.</div>', unsafe_allow_html=True)
 
     st.markdown(
         f'<div class="invis">🔮 <b>KPI INVISIBLE #6 — Handle Time Activo Real</b><br>'
@@ -1991,7 +2086,7 @@ with t9:
     globals().update(_ctx(_fi, _ff, _ags, _colas))
     st.markdown('<div class="sec">💡 Insights & Recomendaciones Estratégicas</div>',
                 unsafe_allow_html=True)
-    st.caption(f"Basado en análisis de {N:,} chats · {f_ini} → {f_fin} · Para uso estratégico del equipo directivo")
+    st.caption(f"{N:,} chats · {f_ini} → {f_fin}")
 
     # KPI rápido banner
     st.markdown('<div class="kpi-grid">' +
@@ -2151,18 +2246,6 @@ with t_aj:
     globals().update(_ctx(_fi, _ff, _ags, _colas))
     st.markdown('<div class="sec">⚙️ Ajuste de Calificaciones</div>',
                 unsafe_allow_html=True)
-    st.markdown(
-        '<div class="info">'
-        '<b>¿Para qué sirve esta pestaña?</b><br>'
-        'A veces un cliente califica bajo no por el trabajo del agente, sino porque: '
-        'respondió "1" sin querer a una pregunta del bot, tuvo un problema con la plataforma, '
-        'o su insatisfacción es con el servicio en general y no con la atención. '
-        '<br><br>'
-        'Aquí puedes <b>excluir esas calificaciones del promedio</b> registrando el motivo. '
-        'Los chats excluidos <b>no se borran</b> — solo se sacan del cálculo del rating. '
-        'El cambio persiste mientras no recargues la página. '
-        'Puedes descargarlo en CSV para llevar un registro histórico.'
-        '</div>', unsafe_allow_html=True)
 
     n_ajustes = sum(1 for v in st.session_state["ajustes_rating"].values() if v.get("excluir"))
     n_ajust_mes = int(df["rating_ajustado"].sum()) if "rating_ajustado" in df.columns else 0
@@ -2324,14 +2407,6 @@ with t_esp:
     globals().update(_ctx(_fi, _ff, _ags, _colas))
     st.markdown('<div class="sec amb">🎓 Especialistas · seguimiento de calificaciones bajas</div>',
                 unsafe_allow_html=True)
-    st.markdown(
-        '<div class="info"><b>¿Para qué sirve?</b><br>'
-        'Detecta qué <b>especialistas calificaron bajo</b> y quiénes lo hacen de forma '
-        'repetida, para contactarlos, hacer una encuesta y entender en qué mejorar. '
-        'Incluye una señal clave: especialistas que calificaron bajo y luego '
-        '<b>dejaron de calificar</b> (descontento silencioso = riesgo de fuga).<br>'
-        'Muestra la cola completa ignorando los filtros de fecha del panel.</div>',
-        unsafe_allow_html=True)
 
     # ── Controles ──────────────────────────────────────────────
     colas_disp = sorted(df_raw["tag"].dropna().unique()) if "tag" in df_raw.columns else []
@@ -2449,7 +2524,5 @@ with t_esp:
 
 # ── Footer ──────────────────────────────────────────────────────────
 st.divider()
-st.caption(f"Opción Yo · Dashboard ATC v3 · {N:,} chats analizados · "
-           f"Metas: Calif≥{META_RATING} · TPR≤{fmt_min(META_TPR)} · "
-           f"SLA2≥{META_SLA2}% · Churn≤{META_CHURN}% · "
-           f"Streamlit + Plotly · Datos: treble.csv")
+st.caption(f"Opción Yo · Atención al Cliente · actualizado {df_raw['created_at'].max():%d/%m/%Y %H:%M} "
+           f"· Build 2026-07-30-interaccion-mediana")
