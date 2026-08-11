@@ -1196,9 +1196,9 @@ with t_atc:
 
             _cal = _pond("calificacion", "calificados")
             _fr, _re = _pond("primera_resp_seg"), _pond("resolucion_seg")
-            # Interacción: MEDIANA de los agentes (método de Treble, robusto a outliers)
-            _iv_vals = pd.to_numeric(m["interaccion_seg"], errors="coerce").dropna()
-            _in = float(_iv_vals.median()) if len(_iv_vals) else np.nan
+            # Interacción del equipo = promedio PONDERADO por chats de los per-agente
+            # (validado 5 y 6 ago contra el dashboard de Treble).
+            _in = _pond("interaccion_seg")
 
             # ── Panel de indicadores (estilo Treble, más limpio) ──
             k1, k2, k3 = st.columns([1.15, 1, 1.15])
