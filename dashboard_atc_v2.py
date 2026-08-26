@@ -1099,7 +1099,7 @@ with t1:
                     s = int(seg)
                     return f"{s//3600}:{(s%3600)//60:02d}:{s%60:02d}"
 
-                # Interacción semanal = MEDIANA de agentes ATC (método Treble)
+                # Interacción semanal = promedio plano de gaps (colas ATC) ponderado por chats
                 _iw = _hd.interaccion_oficial_semanal(120)
                 _imap = {_sund(r["semana"]): _hms(r["interaccion_seg"]) for _, r in _iw.iterrows()}
                 for col in tab_glob.columns:
@@ -1127,7 +1127,7 @@ with t1:
 with t_atc:
     # Metas del reporte diario (editables aquí)
     META_1RESP_S = 60      # 00:01:00
-    META_INTER_S = 300     # 00:05:00
+    META_INTER_S = 180     # 00:03:00 (meta de Yésica)
     META_RESOL_S = 7200    # 02:00:00
 
     def _hms(s):
@@ -2525,4 +2525,4 @@ with t_esp:
 # ── Footer ──────────────────────────────────────────────────────────
 st.divider()
 st.caption(f"Opción Yo · Atención al Cliente · actualizado {df_raw['created_at'].max():%d/%m/%Y %H:%M} "
-           f"· Build 2026-07-30-interaccion-mediana")
+           f"· Build 2026-08-26-interaccion-ponderada")
