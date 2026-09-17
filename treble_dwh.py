@@ -79,50 +79,32 @@ def probar_conexion() -> tuple:
 # ── TIEMPO MEDIO DE INTERACCIÓN (oficial · fact_agent_daily) ──────
 @st.cache_data(ttl=600)
 def interaccion_oficial_semanal(dias: int = 120) -> pd.DataFrame:
-    """Interacción semanal = promedio plano de gaps cliente→agente (colas ATC),
-    ponderado por chats por semana. Mismo método que el reporte diario.
-    Fallback a fact_agent_daily si la consulta por mensajes tarda demasiado."""
+    """Interacción semanal = fuente oficial de Treble (fact_agent_daily.avg_response_time_sec),
+    ponderada por chats_handled.
+
+    CORREGIDO 17/09/2026 (Roberto reportó que no cuadraba contra el dashboard de Treble).
+    La versión anterior RECALCULABA la interacción desde los gaps cliente→agente en
+    fact_agent_messages, filtrando por created_at del día/semana de la conversación.
+    Verificado contra fact_agent_daily el 17/09 (día 2026-09-16, 7 agentes ATC):
+    coincidía en avg_resolution_min (7/7) y en avg_first_response_sec solo en 4/7 —
+    Sofia Castro, Estefany Suárez y Mary Cárdenas divergían hasta 150x (ej. 26 seg
+    calculado vs 3.960 seg real). Mismo patrón en avg_response_time_sec (interacción):
+    de 989 seg reales bajaba a un cálculo propio muy distinto. fact_agent_daily es la
+    tabla que Treble ya entrega pre-agregada — es la MISMA fuente que arma su propio
+    dashboard, así que hay que leerla directo en vez de reconstruirla desde mensajes
+    crudos (esa reconstrucción es sensible a casos raros de datos — timestamps de
+    `assigned_at`/`created_at` que no se comportan como se espera, sobre todo tras
+    transferencias — el mismo tipo de trampa ya documentada para otros dashboards)."""
     sql = f"""
-    WITH scope AS (
-        SELECT conversation_id, agent_name, toStartOfWeek(created_at, 1) AS semana
-        FROM {DB}.fact_conversations
-        WHERE created_at >= now() - INTERVAL {dias} DAY
-          AND first_agent_message_at IS NOT NULL
-          AND lower(trim(agent_name)) IN ('{_agentes_sql()}')
-          AND lower(tag_name) IN ('default', 'especialistas', 'sdd')
-    ),
-    g AS (
-        SELECT s.semana AS semana, s.agent_name AS ag, m.conversation_id AS cid,
-            dateDiff('second',
-                any(m.created_at) OVER (PARTITION BY m.conversation_id ORDER BY m.created_at
-                                        ROWS BETWEEN 1 PRECEDING AND 1 PRECEDING),
-                m.created_at) AS sec,
-            m.sender AS snd,
-            any(m.sender) OVER (PARTITION BY m.conversation_id ORDER BY m.created_at
-                                ROWS BETWEEN 1 PRECEDING AND 1 PRECEDING) AS psnd
-        FROM {DB}.fact_agent_messages AS m
-        INNER JOIN scope AS s ON m.conversation_id = s.conversation_id
-        WHERE m.created_at >= now() - INTERVAL {dias} DAY
-    ),
-    per_agent AS (
-        SELECT semana, ag, avg(sec) AS flat_avg, uniqExact(cid) AS chats
-        FROM g WHERE snd = 'AGENT' AND psnd != 'AGENT' AND sec > 0
-        GROUP BY semana, ag
-    )
-    SELECT semana, round(sum(flat_avg * chats) / nullIf(sum(chats), 0), 0) AS interaccion_seg
-    FROM per_agent GROUP BY semana ORDER BY semana
+    SELECT toStartOfWeek(day, 1) AS semana,
+           round(sum(avg_response_time_sec * chats_handled) / nullIf(sum(chats_handled), 0), 0) AS interaccion_seg
+    FROM {DB}.fact_agent_daily
+    WHERE day >= now() - INTERVAL {dias} DAY
+      AND chats_handled > 0
+      AND lower(trim(agent_name)) IN ('{_agentes_sql()}')
+    GROUP BY semana ORDER BY semana
     """
-    try:
-        return q(sql)
-    except Exception:
-        return q(f"""
-        SELECT toStartOfWeek(day, 1) AS semana,
-               round(medianIf(avg_response_time_sec, avg_response_time_sec > 0), 0) AS interaccion_seg
-        FROM {DB}.fact_agent_daily
-        WHERE day >= now() - INTERVAL {dias} DAY AND chats_handled > 0
-          AND lower(trim(agent_name)) IN ('{_agentes_sql()}')
-        GROUP BY semana ORDER BY semana
-        """)
+    return q(sql)
 
 
 # ── DATOS DE IA / BOT (desde fact_sessions) ──────────────────────
@@ -172,71 +154,56 @@ def equipos_disponibles() -> list:
 def resumen_atc_dia(dia: str, equipos=None) -> pd.DataFrame:
     """Detalle por agente de UN día, SOLO para los 8 agentes del equipo ATC
     (lista ATC_AGENTES). Nunca mezcla agentes de otras áreas, sin importar
-    bajo qué cola/equipo aparezcan sus chats."""
-    sql = f"""
-    SELECT
-        c.agent_name                                              AS agente,
-        count()                                                   AS chats,
-        countIf(c.rating > 0)                                     AS calificados,
-        avgIf(c.rating, c.rating > 0)                             AS calificacion,
-        round(avgIf(dateDiff('second', c.assigned_at, c.first_agent_message_at),
-                    c.assigned_at IS NOT NULL AND c.first_agent_message_at IS NOT NULL
-                    AND c.first_agent_message_at >= c.assigned_at), 0) AS primera_resp_seg,
-        round(avgIf(dateDiff('second', c.created_at, c.finished_at),
-                    c.finished_at IS NOT NULL), 0)                AS resolucion_seg
-    FROM {DB}.fact_conversations AS c
-    WHERE toDate(c.created_at) = toDate('{dia}')
-      AND c.first_agent_message_at IS NOT NULL
-      AND lower(trim(c.agent_name)) IN ('{_agentes_sql()}')
-    GROUP BY c.agent_name
-    ORDER BY chats DESC
-    """
-    return q(sql)
+    bajo qué cola/equipo aparezcan sus chats.
+
+    CORREGIDO 17/09/2026: chats y calificación se siguen contando desde
+    fact_conversations (por created_at del día, eso está bien). Primera
+    respuesta y resolución ahora vienen de fact_agent_daily (fuente oficial
+    de Treble) en vez de recalcularse desde `assigned_at`/`created_at` —
+    ver la nota larga en interaccion_oficial_semanal: ese recálculo daba
+    números hasta 150x más chicos que los reales para algunos agentes
+    (probablemente por transferencias que dejan `assigned_at` inconsistente
+    con el momento real de la primera respuesta)."""
+    base = q(f"""
+        SELECT
+            c.agent_name                                          AS agente,
+            count()                                                AS chats,
+            countIf(c.rating > 0)                                  AS calificados,
+            avgIf(c.rating, c.rating > 0)                          AS calificacion
+        FROM {DB}.fact_conversations AS c
+        WHERE toDate(c.created_at) = toDate('{dia}')
+          AND c.first_agent_message_at IS NOT NULL
+          AND lower(trim(c.agent_name)) IN ('{_agentes_sql()}')
+        GROUP BY c.agent_name
+    """)
+    if base.empty:
+        return base
+    tiempos = q(f"""
+        SELECT
+            agent_name                          AS agente,
+            round(avg_first_response_sec, 0)    AS primera_resp_seg,
+            round(avg_resolution_min * 60, 0)   AS resolucion_seg
+        FROM {DB}.fact_agent_daily
+        WHERE day = toDate('{dia}') AND chats_handled > 0
+          AND lower(trim(agent_name)) IN ('{_agentes_sql()}')
+    """)
+    out = base.merge(tiempos, on="agente", how="left")
+    return out.sort_values("chats", ascending=False).reset_index(drop=True)
 
 
 @st.cache_data(ttl=300)
 def interaccion_dia(dia: str, equipos=None) -> pd.DataFrame:
-    """Interacción por agente = promedio plano de los gaps cliente→agente dentro
-    de las conversaciones de las 3 colas ATC (SDD, Especialistas, Default).
-    El equipo se calcula como promedio PONDERADO por chats (validado: 5 y 6 ago
-    cuadran contra el dashboard de Treble)."""
-    sql = f"""
-    WITH scope AS (
-        SELECT conversation_id, agent_name
-        FROM {DB}.fact_conversations
-        WHERE toDate(created_at) = toDate('{dia}')
-          AND first_agent_message_at IS NOT NULL
+    """Interacción por agente = fuente oficial de Treble (fact_agent_daily.avg_response_time_sec).
+
+    CORREGIDO 17/09/2026 — ver la nota completa en interaccion_oficial_semanal.
+    Antes recalculaba desde los gaps cliente→agente en fact_agent_messages; ahora
+    lee directo el campo que Treble ya entrega pre-agregado por agente y día."""
+    return q(f"""
+        SELECT agent_name AS agente, round(avg_response_time_sec, 0) AS interaccion_seg
+        FROM {DB}.fact_agent_daily
+        WHERE day = toDate('{dia}') AND chats_handled > 0
           AND lower(trim(agent_name)) IN ('{_agentes_sql()}')
-          AND lower(tag_name) IN ('default', 'especialistas', 'sdd')
-    ),
-    g AS (
-        SELECT
-            s.agent_name AS ag,
-            dateDiff('second',
-                any(m.created_at) OVER (PARTITION BY m.conversation_id ORDER BY m.created_at
-                                        ROWS BETWEEN 1 PRECEDING AND 1 PRECEDING),
-                m.created_at) AS sec,
-            m.sender AS snd,
-            any(m.sender) OVER (PARTITION BY m.conversation_id ORDER BY m.created_at
-                                ROWS BETWEEN 1 PRECEDING AND 1 PRECEDING) AS psnd
-        FROM {DB}.fact_agent_messages AS m
-        INNER JOIN scope AS s ON m.conversation_id = s.conversation_id
-        WHERE toDate(m.created_at) = toDate('{dia}')
-    )
-    SELECT ag AS agente, round(avg(sec), 0) AS interaccion_seg
-    FROM g
-    WHERE snd = 'AGENT' AND psnd != 'AGENT' AND sec > 0
-    GROUP BY ag
-    """
-    try:
-        return q(sql)
-    except Exception:
-        return q(f"""
-            SELECT agent_name AS agente, avg_response_time_sec AS interaccion_seg
-            FROM {DB}.fact_agent_daily
-            WHERE toDate(day) = toDate('{dia}') AND chats_handled > 0
-              AND lower(trim(agent_name)) IN ('{_agentes_sql()}')
-        """)
+    """)
 
 
 @st.cache_data(ttl=300)
