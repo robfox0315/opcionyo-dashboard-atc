@@ -76,32 +76,50 @@ def probar_conexion() -> tuple:
         return False, f"{type(e).__name__}: {str(e)[:200]}"
 
 
-# ── TIEMPO MEDIO DE INTERACCIÓN (oficial · fact_agent_daily) ──────
+# ── TIEMPO MEDIO DE INTERACCIÓN (mediana de gaps cliente→agente) ──
 @st.cache_data(ttl=600)
 def interaccion_oficial_semanal(dias: int = 120) -> pd.DataFrame:
-    """Interacción semanal = fuente oficial de Treble (fact_agent_daily.avg_response_time_sec),
-    ponderada por chats_handled.
+    """Interacción semanal = MEDIANA de los gaps cliente→agente (fact_agent_messages),
+    calculada directo sobre el equipo (no promedio de promedios por agente).
 
-    CORREGIDO 17/09/2026 (Roberto reportó que no cuadraba contra el dashboard de Treble).
-    La versión anterior RECALCULABA la interacción desde los gaps cliente→agente en
-    fact_agent_messages, filtrando por created_at del día/semana de la conversación.
-    Verificado contra fact_agent_daily el 17/09 (día 2026-09-16, 7 agentes ATC):
-    coincidía en avg_resolution_min (7/7) y en avg_first_response_sec solo en 4/7 —
-    Sofia Castro, Estefany Suárez y Mary Cárdenas divergían hasta 150x (ej. 26 seg
-    calculado vs 3.960 seg real). Mismo patrón en avg_response_time_sec (interacción):
-    de 989 seg reales bajaba a un cálculo propio muy distinto. fact_agent_daily es la
-    tabla que Treble ya entrega pre-agregada — es la MISMA fuente que arma su propio
-    dashboard, así que hay que leerla directo en vez de reconstruirla desde mensajes
-    crudos (esa reconstrucción es sensible a casos raros de datos — timestamps de
-    `assigned_at`/`created_at` que no se comportan como se espera, sobre todo tras
-    transferencias — el mismo tipo de trampa ya documentada para otros dashboards)."""
+    HISTORIA DEL FIX (17/09/2026, dos vueltas):
+    1ª vuelta: el cálculo original usaba PROMEDIO de los gaps. Roberto reportó que no
+    cuadraba contra Treble. Cambié a leer `fact_agent_daily.avg_response_time_sec`
+    (tabla que Treble entrega pre-agregada) creyendo que esa era la fuente oficial.
+    2ª vuelta: Roberto no tiene el dato real de Treble para comparar, pero SÍ sabe el
+    rango esperado por operación: primera respuesta <1 min, interacción <5 min.
+    `avg_response_time_sec` daba 8+ minutos — no cuadraba con esa expectativa tampoco.
+    Verificado el motivo: es un PROMEDIO simple, y un puñado de chats con gaps de
+    horas (clientes que tardan en contestar, o backlog reabierto) infla el promedio
+    aunque la mayoría de las respuestas sea casi instantánea. La MEDIANA no se deja
+    arrastrar por esos outliers y sí refleja el caso típico: verificado día 2026-09-16
+    (7 agentes ATC) → mediana de equipo 39 seg (vs. promedio 677 seg); verificado
+    también en 10 semanas seguidas (13/07 a 14/09): mediana semanal siempre entre
+    39 y 62 seg. Ambos muy por debajo de la meta de 5 min — este es el número correcto.
+    Mismo criterio aplicado a "primera respuesta" en `resumen_atc_dia`."""
     sql = f"""
-    SELECT toStartOfWeek(day, 1) AS semana,
-           round(sum(avg_response_time_sec * chats_handled) / nullIf(sum(chats_handled), 0), 0) AS interaccion_seg
-    FROM {DB}.fact_agent_daily
-    WHERE day >= now() - INTERVAL {dias} DAY
-      AND chats_handled > 0
-      AND lower(trim(agent_name)) IN ('{_agentes_sql()}')
+    WITH scope AS (
+        SELECT conversation_id, toStartOfWeek(created_at, 1) AS semana
+        FROM {DB}.fact_conversations
+        WHERE created_at >= now() - INTERVAL {dias} DAY
+          AND first_agent_message_at IS NOT NULL
+          AND lower(trim(agent_name)) IN ('{_agentes_sql()}')
+    ),
+    g AS (
+        SELECT s.semana AS semana,
+            dateDiff('second',
+                any(m.created_at) OVER (PARTITION BY m.conversation_id ORDER BY m.created_at
+                                        ROWS BETWEEN 1 PRECEDING AND 1 PRECEDING),
+                m.created_at) AS sec,
+            m.sender AS snd,
+            any(m.sender) OVER (PARTITION BY m.conversation_id ORDER BY m.created_at
+                                ROWS BETWEEN 1 PRECEDING AND 1 PRECEDING) AS psnd
+        FROM {DB}.fact_agent_messages AS m
+        INNER JOIN scope AS s ON m.conversation_id = s.conversation_id
+        WHERE m.created_at >= now() - INTERVAL {dias} DAY
+    )
+    SELECT semana, round(median(sec), 0) AS interaccion_seg
+    FROM g WHERE snd = 'AGENT' AND psnd != 'AGENT' AND sec > 0
     GROUP BY semana ORDER BY semana
     """
     return q(sql)
@@ -156,54 +174,67 @@ def resumen_atc_dia(dia: str, equipos=None) -> pd.DataFrame:
     (lista ATC_AGENTES). Nunca mezcla agentes de otras áreas, sin importar
     bajo qué cola/equipo aparezcan sus chats.
 
-    CORREGIDO 17/09/2026: chats y calificación se siguen contando desde
-    fact_conversations (por created_at del día, eso está bien). Primera
-    respuesta y resolución ahora vienen de fact_agent_daily (fuente oficial
-    de Treble) en vez de recalcularse desde `assigned_at`/`created_at` —
-    ver la nota larga en interaccion_oficial_semanal: ese recálculo daba
-    números hasta 150x más chicos que los reales para algunos agentes
-    (probablemente por transferencias que dejan `assigned_at` inconsistente
-    con el momento real de la primera respuesta)."""
-    base = q(f"""
+    CORREGIDO 17/09/2026 (2ª vuelta — ver la nota completa en
+    interaccion_oficial_semanal). `primera_resp_seg` es ahora la MEDIANA de
+    `first_response_sec` — el campo que el propio Treble calcula por
+    conversación (creación → primer mensaje del agente), leído directo de
+    fact_conversations. Se usa mediana por la misma razón que en interacción:
+    un puñado de chats con horas de espera (cola, backlog) infla el promedio
+    muy por encima de lo que responde un agente en el día a día. Verificado
+    16/09: mediana de equipo 20 seg (vs. promedio 2.170 seg) — la mediana es
+    la que cae dentro de la meta de <1 min, el promedio no.
+    `resolucion_seg` sigue por promedio (no tiene la misma meta de "casi
+    instantáneo", y ya coincide exacto con `fact_agent_daily.avg_resolution_min`)."""
+    return q(f"""
         SELECT
-            c.agent_name                                          AS agente,
-            count()                                                AS chats,
-            countIf(c.rating > 0)                                  AS calificados,
-            avgIf(c.rating, c.rating > 0)                          AS calificacion
+            c.agent_name                                                       AS agente,
+            count()                                                            AS chats,
+            countIf(c.rating > 0)                                              AS calificados,
+            avgIf(c.rating, c.rating > 0)                                      AS calificacion,
+            round(medianIf(c.first_response_sec, c.first_response_sec > 0), 0) AS primera_resp_seg,
+            round(avgIf(dateDiff('second', c.created_at, c.finished_at),
+                        c.finished_at IS NOT NULL), 0)                         AS resolucion_seg
         FROM {DB}.fact_conversations AS c
         WHERE toDate(c.created_at) = toDate('{dia}')
           AND c.first_agent_message_at IS NOT NULL
           AND lower(trim(c.agent_name)) IN ('{_agentes_sql()}')
         GROUP BY c.agent_name
+        ORDER BY chats DESC
     """)
-    if base.empty:
-        return base
-    tiempos = q(f"""
-        SELECT
-            agent_name                          AS agente,
-            round(avg_first_response_sec, 0)    AS primera_resp_seg,
-            round(avg_resolution_min * 60, 0)   AS resolucion_seg
-        FROM {DB}.fact_agent_daily
-        WHERE day = toDate('{dia}') AND chats_handled > 0
-          AND lower(trim(agent_name)) IN ('{_agentes_sql()}')
-    """)
-    out = base.merge(tiempos, on="agente", how="left")
-    return out.sort_values("chats", ascending=False).reset_index(drop=True)
 
 
 @st.cache_data(ttl=300)
 def interaccion_dia(dia: str, equipos=None) -> pd.DataFrame:
-    """Interacción por agente = fuente oficial de Treble (fact_agent_daily.avg_response_time_sec).
-
-    CORREGIDO 17/09/2026 — ver la nota completa en interaccion_oficial_semanal.
-    Antes recalculaba desde los gaps cliente→agente en fact_agent_messages; ahora
-    lee directo el campo que Treble ya entrega pre-agregado por agente y día."""
-    return q(f"""
-        SELECT agent_name AS agente, round(avg_response_time_sec, 0) AS interaccion_seg
-        FROM {DB}.fact_agent_daily
-        WHERE day = toDate('{dia}') AND chats_handled > 0
+    """Interacción por agente = MEDIANA de los gaps cliente→agente del día
+    (ver la nota completa en interaccion_oficial_semanal)."""
+    sql = f"""
+    WITH scope AS (
+        SELECT conversation_id, agent_name
+        FROM {DB}.fact_conversations
+        WHERE toDate(created_at) = toDate('{dia}')
+          AND first_agent_message_at IS NOT NULL
           AND lower(trim(agent_name)) IN ('{_agentes_sql()}')
-    """)
+    ),
+    g AS (
+        SELECT
+            s.agent_name AS ag,
+            dateDiff('second',
+                any(m.created_at) OVER (PARTITION BY m.conversation_id ORDER BY m.created_at
+                                        ROWS BETWEEN 1 PRECEDING AND 1 PRECEDING),
+                m.created_at) AS sec,
+            m.sender AS snd,
+            any(m.sender) OVER (PARTITION BY m.conversation_id ORDER BY m.created_at
+                                ROWS BETWEEN 1 PRECEDING AND 1 PRECEDING) AS psnd
+        FROM {DB}.fact_agent_messages AS m
+        INNER JOIN scope AS s ON m.conversation_id = s.conversation_id
+        WHERE toDate(m.created_at) = toDate('{dia}')
+    )
+    SELECT ag AS agente, round(median(sec), 0) AS interaccion_seg
+    FROM g
+    WHERE snd = 'AGENT' AND psnd != 'AGENT' AND sec > 0
+    GROUP BY ag
+    """
+    return q(sql)
 
 
 @st.cache_data(ttl=300)
